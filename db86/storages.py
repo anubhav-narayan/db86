@@ -433,17 +433,11 @@ class JSONStorage(UserDict):
 
         if type(value) == dict:
             import json
-            if key not in self:
-                data = (key, json.dumps(value))
-                ADD_ITEM = f'REPLACE INTO "{self.name}"\
-                 ("key", "object") VALUES (?, ?)'
-            else:
-                data = (json.dumps(value), key)
-                ADD_ITEM = f'UPDATE "{self.name}"\
-                 SET "object" = ? WHERE "key" = ?'
+            ADD_ITEM = f'INSERT INTO "{self.name}" (key, object) VALUES (?, ?)\
+ON CONFLICT(key) DO UPDATE SET object = excluded.object;'
         else:
             raise TypeError("Incorrect value format, use dict")
-        self.__conn.execute(ADD_ITEM, data)
+        self.__conn.execute(ADD_ITEM, (key, json.dumps(value)))
         if self.__conn.autocommit and self.__conn.transaction_depth == 0:
             self.commit()
 

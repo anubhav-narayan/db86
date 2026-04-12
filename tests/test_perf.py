@@ -20,7 +20,7 @@ import time
 import tempfile
 import os
 from typing import Generator, Dict, List, Tuple
-from db86 import Database
+from db86 import Database, Transaction
 import statistics
 
 
@@ -424,9 +424,9 @@ class TestPerformanceBenchmarks:
         
         # Benchmark: 1000 inserts
         start = time.perf_counter()
-        for i in range(1000):
-            storage[f'bench_{i}'] = {'id': i, 'value': f'data_{i}'}
-        perf_db_memory.conn.commit()
+        with Transaction("bench_txn", perf_db_memory.conn) as txn:
+            for i in range(1000):
+                storage[f'bench_{i}'] = {'id': i, 'value': f'data_{i}'}
         elapsed = time.perf_counter() - start
         
         throughput = 1000 / elapsed
@@ -501,12 +501,11 @@ class TestPerformanceBenchmarks:
         # Benchmark: 1000 writes of complex document
         metrics = PerformanceMetrics('JSON serialization')
         
-        for i in range(1000):
-            metrics.start()
-            storage[f'complex_{i}'] = complex_doc
-            metrics.stop()
-        
-        perf_db_memory.conn.commit()
+        with Transaction("serialization_txn", perf_db_memory.conn) as txn:
+            for i in range(1000):
+                metrics.start()
+                storage[f'complex_{i}'] = complex_doc
+                metrics.stop()
         
         print(f"\n{metrics.report()}")
         
@@ -543,9 +542,9 @@ class TestPerformanceComparison:
         # Test 1: Batch commit
         storage1 = perf_db_memory['batch']
         start1 = time.perf_counter()
-        for i in range(1000):
-            storage1[f'key_{i}'] = {'value': i}
-        perf_db_memory.conn.commit()
+        with Transaction("batch_txn", perf_db_memory.conn) as txn:
+            for i in range(1000):
+                storage1[f'key_{i}'] = {'value': i}
         batch_time = time.perf_counter() - start1
         
         # Test 2: Individual commits (slower path)
@@ -676,17 +675,17 @@ class TestEndurance:
         start = time.perf_counter()
         
         # Write for ~10 seconds worth of operations
-        for i in range(5000):
-            storage[f'item_{i}'] = {
-                'index': i,
-                'timestamp': time.time(),
-                'data': f'value_{i}'
-            }
-            
-            if (i + 1) % 500 == 0:
-                perf_db_memory.conn.commit()
-        
-        perf_db_memory.conn.commit()
+        with Transaction("sustained_txn", perf_db_memory.conn) as txn:
+            for i in range(5000):
+                storage[f'item_{i}'] = {
+                    'index': i,
+                    'timestamp': time.time(),
+                    'data': f'value_{i}'
+                }
+                
+                if (i + 1) % 500 == 0:
+                    perf_db_memory.commit(False)
+
         elapsed = time.perf_counter() - start
         
         throughput = 5000 / elapsed
