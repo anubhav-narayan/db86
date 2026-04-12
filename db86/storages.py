@@ -368,17 +368,17 @@ class JSONStorage(UserDict):
         # Check for the table or create new with
         # two columns named key(Primary Key) and
         # object
-        GET_ITEM = 'SELECT name FROM sqlite_master WHERE name = ?'
+        GET_ITEM = 'SELECT name FROM sqlite_master WHERE name = ?;'
         item = self.__conn.select_one(GET_ITEM, (name,))
         if item is None:
             MAKE_TABLE = f'''\
             CREATE TABLE IF NOT EXISTS "{self.name}" (
                 "key" {primary_key_dtype} PRIMARY KEY,
                 "object" TEXT
-            )
+            );
             '''
             self.__conn.execute(MAKE_TABLE)
-            self.__conn.commit()
+            self.__conn.commit(False)
 
     def describe(self):
         GET_COLS = f'PRAGMA TABLE_INFO("{self.name}")'
