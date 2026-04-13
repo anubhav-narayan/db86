@@ -1,5 +1,7 @@
+import sqlite3
+
 from .threads import SqliteMultiThread
-from typing import List
+from typing import List, Literal
 from contextvars import ContextVar
 from .logger import logger
 
@@ -18,9 +20,16 @@ class TxContext:
 
 
 class Transaction:
-    def __init__(self, name: str, connection: SqliteMultiThread):
+    def __init__(self, name: str,
+                 connection: SqliteMultiThread, 
+                tx_type: Literal["TRANSACTION", "IMMEDIATE", "EXCLUSIVE"] = "TRANSACTION",
+                 retries: int = 5,
+                 retry_delay: float = 0.1):
         self.name = name.replace('"', '""')
         self.conn = connection
+        self.tx_type = tx_type
+        self.retries = retries
+        self.retry_delay = retry_delay
         self.active = False
         self.sp_list: List[str] = []
         self.sp_last = None
@@ -31,6 +40,7 @@ class Transaction:
         )
 
     def patch(self):
+        # Save originals
         self.__original_execute = self.conn.execute
         self.__original_select = self.conn.select
         self.__original_commit = self.conn.commit
@@ -38,15 +48,13 @@ class Transaction:
         ctx = TxContext(self)
 
         def patched_execute(req: str, arg=None, res=None):
-            logger.debug(f"Intercepted execute: {req} with arg: {arg} and res: {res}")
             if req.lstrip().upper().startswith(self._READ_PREFIXES):
                 self.flush()
-                self.__original_execute(req, arg, res)
+                return self.__original_execute(req, arg, res)
             else:
                 self.__buffer.append((req, arg, res))
 
         def patched_select(req: str, arg=None):
-            logger.debug(f"Intercepted select: {req} with arg: {arg}")
             self.flush()
             return self.__original_select(req, arg)
 
@@ -58,40 +66,36 @@ class Transaction:
         ctx.commit = patched_commit
         ctx.active = True
 
-        # Set context for this transaction
         tx_context.set(ctx)
 
-        # Install dispatcher once on conn — idempotent
-        if not getattr(self.conn, "_dispatching", False):
-            _orig_execute = self.conn.execute
-            _orig_select = self.conn.select
-            _orig_commit = self.conn.commit
+        # Install dispatcher (temporary)
+        def dispatch_execute(req, arg=None, res=None):
+            ctx = tx_context.get()
+            if ctx and ctx.active and ctx.execute:
+                return ctx.execute(req, arg, res)
+            return self.__original_execute(req, arg, res)
 
-            def dispatch_execute(req, arg=None, res=None):
-                ctx = tx_context.get()
-                if ctx and ctx.active and ctx.execute:
-                    return ctx.execute(req, arg, res)
-                return _orig_execute(req, arg, res)
+        def dispatch_select(req, arg=None):
+            ctx = tx_context.get()
+            if ctx and ctx.active and ctx.select:
+                return ctx.select(req, arg)
+            return self.__original_select(req, arg)
 
-            def dispatch_select(req, arg=None):
-                ctx = tx_context.get()
-                if ctx and ctx.active and ctx.select:
-                    return ctx.select(req, arg)
-                return _orig_select(req, arg)
+        def dispatch_commit(blocking=True):
+            ctx = tx_context.get()
+            if ctx and ctx.active and ctx.commit:
+                return ctx.commit(blocking)
+            return self.__original_commit(blocking)
 
-            def dispatch_commit(blocking=True):
-                ctx = tx_context.get()
-                if ctx and ctx.active and ctx.commit:
-                    return ctx.commit(blocking)
-                return _orig_commit(blocking)
-
-            self.conn.execute = dispatch_execute
-            self.conn.select = dispatch_select
-            self.conn.commit = dispatch_commit
-            self.conn._dispatching = True
+        self.conn.execute = dispatch_execute
+        self.conn.select = dispatch_select
+        self.conn.commit = dispatch_commit
 
     def unpatch(self):
-        # Reset context to None
+        # Restore originals
+        self.conn.execute = self.__original_execute
+        self.conn.select = self.__original_select
+        self.conn.commit = self.__original_commit
         tx_context.set(None)
         self.flush()
 
@@ -101,13 +105,24 @@ class Transaction:
             self.__original_execute(req, arg, res)
         self.__buffer.clear()
 
-    def begin(self):
+    def begin(self) -> None:
+        import time
         if self.active:
             raise RuntimeError("Transaction already active")
-        logger.debug(f"Transaction '{self.name}' started.")
-        self.conn.execute("BEGIN TRANSACTION;")
-        self.savepoint(self.name)
-        self.active = True
+        
+        for attempt in range(self.retries):
+            try:
+                self.conn.execute(f"BEGIN {self.tx_type};")
+                logger.debug(f"Transaction '{self.name}' started.")
+                self.savepoint(self.name)
+                self.active = True
+                return
+            except sqlite3.OperationalError as e:
+                if "locked" in str(e).lower():
+                    time.sleep(self.retry_delay)
+                else:
+                    raise
+        raise RuntimeError(f"Transaction initialization failed after {self.retries} retries")
 
     def commit(self):
         if not self.active:
@@ -126,6 +141,10 @@ class Transaction:
         logger.debug(f"Savepoint '{sp_name}' created.")
 
     def rollback(self):
+        if not self.active:
+            raise RuntimeError("No active transaction")
+        self.__buffer.clear()
+        self.unpatch()
         self.conn.execute("ROLLBACK;")
         self.conn.transaction_depth = 0
         self.active = False
@@ -153,8 +172,8 @@ class Transaction:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if exc_type:
-            self.__buffer.clear()
             self.rollback()
+            return False
         else:
             self.commit()
         self.unpatch()
