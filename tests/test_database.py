@@ -5,7 +5,7 @@ from db86.storages import JSONStorage, Table
 
 @pytest.fixture
 def mem_db() -> Generator[Database, None, None]:
-    """In-memory xdbx Database, closed after each test."""
+    """In-memory db86 Database, closed after each test."""
     db = Database(":memory:", autocommit=True, journal_mode="WAL")
     yield db
     db.close(do_log=False, force=True)
@@ -86,7 +86,6 @@ class TestDatabase:
         storage = db["txn_rollback"]
 
         with pytest.raises(RuntimeError, match="boom"):
-            storage.commit()
             with Transaction("txn", db.conn):
                 assert db.conn.transaction_depth > 0
                 storage["a"] = {"value": 1}
@@ -101,7 +100,7 @@ class TestDatabase:
         storage = db["txn_rollback"]
 
         with pytest.raises(RuntimeError, match="boom_2"):
-            storage.commit()
+            # storage.commit()
             with Transaction("txn", db.conn) as txn:
                 try:
                     storage["a"] = {"value": 1}
@@ -125,7 +124,7 @@ class TestDatabase:
         storage = db["txn_rollback"]
 
         storage.commit()
-        with Transaction("txn", db.conn) as txn:
+        with Transaction("txn", db.conn, "IMMEDIATE") as txn:
             try:
                 storage["a"] = {"value": 1}
                 txn.savepoint("sp1")
