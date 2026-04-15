@@ -190,7 +190,7 @@ class TestStressInsert:
         start = time.perf_counter()
         for key, value in large_dataset.items():
             storage[key] = value
-        perf_db_memory.conn.commit()
+        storage.commit()
         elapsed = (time.perf_counter() - start) * 1000
         
         # Verify all items inserted
@@ -212,12 +212,8 @@ class TestStressInsert:
         
         for i, (key, value) in enumerate(huge_dataset.items()):
             storage[key] = value
-            
-            # Commit every 10K items
-            if (i + 1) % batch_size == 0:
-                perf_db_memory.conn.commit()
         
-        perf_db_memory.conn.commit()
+        storage.commit()
         total_time = (time.perf_counter() - start) * 1000
         
         assert len(storage) == 100000
@@ -234,7 +230,7 @@ class TestStressInsert:
         for i in range(1000):
             metrics.start()
             storage[f'key_{i}'] = {'value': i}
-            perf_db_memory.conn.commit()
+            storage.commit()
             metrics.stop()
         
         assert len(storage) == 1000
@@ -256,7 +252,9 @@ class TestStressQuery:
         # Populate
         for key, value in large_dataset.items():
             storage[key] = value
-        perf_db_memory.conn.commit()
+            if (len(storage) % 1000) == 0:
+                storage.commit()
+        storage.commit()
         
         # Measure read performance
         start = time.perf_counter()
@@ -302,8 +300,8 @@ class TestStressQuery:
         for i, (key, value) in enumerate(huge_dataset.items()):
             storage[key] = value
             if (i + 1) % batch_size == 0:
-                perf_db_memory.conn.commit()
-        perf_db_memory.conn.commit()
+                storage.commit()
+        storage.commit()
         
         # Measure scan performance
         start = time.perf_counter()
@@ -682,9 +680,6 @@ class TestEndurance:
                     'timestamp': time.time(),
                     'data': f'value_{i}'
                 }
-                
-                if (i + 1) % 500 == 0:
-                    perf_db_memory.commit(False)
 
         elapsed = time.perf_counter() - start
         
