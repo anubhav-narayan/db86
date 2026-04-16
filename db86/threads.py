@@ -1,26 +1,19 @@
 """
-SqliteMultiThread — modern rewrite for Python 3.10+
-====================================================
-Key changes vs the original sqlitedict-derived version
--------------------------------------------------------
-* One worker thread owns the sqlite3.Connection. Reads AND writes are
-  serialised through it; sqlite3's WAL mode handles concurrent readers
-  at the OS level without us doing anything extra.
-* Requests are typed dataclasses (not sentinel strings), so the dispatch
-  loop is a simple match statement with no string compares.
-* Results flow back through a single threading.Event + slot instead of
-  a per-call Queue; this halves allocations per round-trip.
-* Initialisation uses threading.Event.wait(timeout) — no busy-poll.
-* Exceptions are stored as the live exception object (not a 3-tuple)
-  and re-raised with `raise exc from None` to keep tracebacks clean.
-* executemany() is a single DBAPI call, not a Python loop.
-* select() returns a list (one round-trip); select_one() fetches only
-  the first row via `LIMIT 1` injection where possible, otherwise slices.
-* transaction_depth is an int incremented/decremented under the worker
-  thread — no race; callers treat it as advisory only.
-* No traceback capture on every execute(); errors surface on the next
-  blocking call (select / select_one / commit(blocking=True)).
+SqliteMultiThread
+=================
+
+Runs all SQLite operations through a single background thread.
+
+- One thread owns the sqlite3.Connection; every query is queued to it.
+- WAL mode lets multiple readers work safely at the OS level.
+- Requests are typed dataclasses, dispatched with `match`.
+- Results are returned via a lightweight queue/event slot.
+- Errors are stored and re-raised on the next blocking call.
+- Supports execute, executemany, select, select_one, commit, and close.
+- `transaction_depth` tracks active transactions; autocommit only runs
+  when depth is zero.
 """
+
 
 from __future__ import annotations
 
