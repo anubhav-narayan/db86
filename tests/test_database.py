@@ -89,6 +89,7 @@ class TestDatabase:
             with Transaction("txn", db.conn):
                 assert db.conn.transaction_depth > 0
                 storage["a"] = {"value": 1}
+                assert "a" in storage # Sync to DB, essential for rollback test
                 raise RuntimeError("boom")
 
         assert db.conn.transaction_depth == 0

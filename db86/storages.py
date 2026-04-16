@@ -667,6 +667,7 @@ ON CONFLICT(key) DO UPDATE SET object = excluded.object;'
         not guaranteed persisted (default implication when autocommit=True).
         '''
         if self.__conn is not None:
+            self.__conn.transaction_depth = 0
             self.__conn.commit(blocking)
 
     def to_dict(self):
