@@ -15,7 +15,7 @@ def pretty_print(value):
         click.echo('None')
         return
     if isinstance(value, (dict, list, tuple, set)):
-        click.echo(pprint.pformat(value, indent=2, width=120, compact=False))
+        click.echo(pprint.pformat(value, indent=2, width=80, compact=False))
     else:
         click.echo(str(value))
 
