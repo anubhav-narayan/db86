@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "db86"
-version = "0.6.2"
+version = "0.7.0"
 description = "A robust Python wrapper around SQLite3 providing dict-like API, multi-threading support, and REST service endpoints"
 authors = ["Anubhav Mattoo <anubhavmattoo@outlook.com>"]
 license = "MIT"

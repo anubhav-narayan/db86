@@ -2,7 +2,7 @@
 
 ![License](https://img.shields.io/badge/licence-MIT-green)
 ![Python](https://img.shields.io/badge/python-3.10+-blue)
-![Version](https://img.shields.io/badge/version-0.6.2-brightgreen)
+![Version](https://img.shields.io/badge/version-0.7.0-brightgreen)
 
 DB86 is a robust Python 3.10+ wrapper around SQLite3 that provides a powerful, Pythonic interface for database operations. It supports both traditional relational tables and JSON document storage with a dict-like API, comprehensive multi-threading support, and optional REST service endpoints.
 
@@ -23,7 +23,6 @@ Built on lessons from [sqlitedict](https://github.com/RaRe-Technologies/sqlitedi
   - [Database Configuration](#database-configuration)
 - [CLI Tool](#cli-tool)
 - [REST Service](#rest-service)
-- [API Reference](#api-reference)
 - [Advanced Examples](#advanced-examples)
 - [Testing](#testing)
 - [Contributing](#contributing)
@@ -42,10 +41,12 @@ Built on lessons from [sqlitedict](https://github.com/RaRe-Technologies/sqlitedi
 - ⚙️ **Flexible Configuration**: Autocommit, journal modes, and timeout controls
 - 🚀 **In-Memory & File-Based**: Support for both `:memory:` and persistent databases
 - 🔌 **REST API**: Built-in FastAPI service for remote database access
-- 🎮 **CLI Management**: Interactive shell for database administration
+- 🎮 **CLI Management**: Interactive shells for database & REST administration
 - 📤 **Multiple Flags**: Read-only ('r'), read-write ('c'), and write-fresh ('w') modes
 - 🔍 **Schema Inspection**: Database describe(), table metadata, indices, and views
 - 💪 **Context Manager Support**: Automatic resource cleanup with `with` statements
+- ⚡ **Advanced Engine Support**: Pluggable storage engines for custom backends
+- 🔐 **Contextual Transactions**: Thread-safe transaction context management
 
 ---
 
@@ -307,7 +308,7 @@ db = Database('./db.sqlite', journal_mode='OFF')
 
 ---
 
-<!-- ## CLI Tool
+## CLI Tool
 
 DB86 includes an interactive management shell:
 
@@ -320,14 +321,11 @@ sdbx
 ```
 dbx> create -a -m mydatabase      # Create in-memory database
 dbx> list                          # List open databases
-dbx> select <db>                   # Select active database
-dbx> describe                      # Show database schema
-dbx> tables                         # List all tables
 dbx> help                           # Show help
 dbx> exit                           # Close and exit
 ```
 
---- -->
+---
 
 ## REST Service
 
@@ -384,63 +382,6 @@ curl -X DELETE http://localhost:8000/databases/mydb/storages/items/items/123
 ```
 
 Access the interactive API documentation at `http://localhost:8000/docs`
-
-<!-- ---
-
-## API Reference
-
-### Database Class
-
-```python
-class Database(UserDict):
-    """Thread-safe SQLite3 database wrapper with dict-like interface."""
-    
-    def __init__(self, filename=':memory:', flag='c', 
-                 autocommit=False, journal_mode='DELETE', timeout=5)
-    
-    # Properties
-    storages: list          # Names of all tables
-    indices: list           # Names of all indices
-    views: list             # Names of all views
-    filename: str           # Database file path
-    
-    # Methods
-    describe() -> str       # Print formatted schema
-    close(do_log=True, force=False) -> None
-    commit() -> None        # Commit pending changes
-```
-
-### JSONStorage Class
-
-```python
-class JSONStorage(UserDict):
-    """JSON document storage with dict-like interface."""
-    
-    # Inherits UserDict methods
-    keys(), values(), items()
-    get(), pop(), setdefault()
-    update(), clear()
-    
-    # Storage-specific methods
-    close() -> None
-```
-
-### Table Class
-
-```python
-class Table(UserDict):
-    """Relational table with schema inspection."""
-    
-    # Properties
-    columns: list           # Column names
-    xschema: dict           # Schema definition and SQL
-    
-    # Methods
-    describe() -> str       # Print formatted table schema
-    close() -> None
-```
-
---- -->
 
 ## Advanced Examples
 
@@ -568,4 +509,3 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 ---
 
 **Questions?** Open an issue on [GitHub](https://github.com/anubhav-narayan/DB86/issues)
-

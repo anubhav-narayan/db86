@@ -291,7 +291,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="DB86 REST Service",
     description="REST service for DB86 based SQLite3 databases",
-    version='0.1.0',
+    version='0.2.0',
     lifespan=lifespan,
 )
 
