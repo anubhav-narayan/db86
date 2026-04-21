@@ -714,3 +714,312 @@ class TestEndurance:
         print(f"\n✓ Sustained read throughput: {throughput:.0f} reads/sec over {elapsed:.1f}s")
         assert throughput > 1000, f"Throughput too low: {throughput:.0f}/s"
 
+
+# ============================================================================
+# ENGINE PERFORMANCE TESTS
+# ============================================================================
+
+@pytest.mark.performance
+class TestEnginePerformance:
+    """Performance benchmarks for query engines."""
+
+    @pytest.fixture
+    def engine_dataset(self, perf_db_memory):
+        """Create dataset optimized for engine testing."""
+        # Create users table
+        users = perf_db_memory['users', 'table']
+        for i in range(5000):
+            users[f'user_{i}'] = {
+                'name': f'User_{i}',
+                'age': 20 + (i % 50),
+                'city': ['NYC', 'SF', 'LA', 'BOS', 'SEA'][i % 5],
+                'dept': ['eng', 'sales', 'mktg', 'hr', 'ops'][i % 5],
+                'salary': 50000 + (i * 100),
+                'active': i % 2 == 0
+            }
+
+        # Create orders table
+        orders = perf_db_memory['orders', 'table']
+        for i in range(25000):
+            orders[f'order_{i}'] = {
+                'user_id': f'user_{i % 5000}',
+                'product': f'product_{i % 100}',
+                'amount': 10 + (i % 500),
+                'status': ['pending', 'completed', 'shipped', 'cancelled'][i % 4],
+                'date': f'2024-{(i % 12) + 1:02d}-01'
+            }
+
+        perf_db_memory.conn.commit()
+        return perf_db_memory
+
+    def test_engine_4ac_filter_performance(self, engine_dataset):
+        """Benchmark Engine4A_C complex filtering."""
+        from db86.engines import Engine4A_C
+
+        users = engine_dataset['users', 'table']
+        engine = Engine4A_C(users)
+
+        metrics = PerformanceMetrics('4A-C Complex Filter')
+
+        for _ in range(100):  # Run 100 times for stable metrics
+            metrics.start()
+            result = engine.query({
+                "filter": {
+                    "and": [
+                        {"path": "age", "op": "gte", "value": 25},
+                        {"path": "dept", "op": "in", "value": ["eng", "sales", "mktg"]},
+                        {"path": "salary", "op": "gt", "value": 100000},
+                        {"path": "active", "op": "eq", "value": True}
+                    ]
+                },
+                "select": ["name", "salary", "dept"],
+                "sort": [{"field": "salary", "order": "desc"}],
+                "limit": 50
+            })
+            metrics.stop()
+
+        print(f"\n{metrics.report()}")
+        assert len(result) > 0
+        assert metrics.avg_ms < 50, f"Query too slow: {metrics.avg_ms:.2f}ms avg"
+
+    def test_engine_4ac_aggregation_performance(self, engine_dataset):
+        """Benchmark Engine4A_C aggregation operations."""
+        from db86.engines import Engine4A_C
+
+        users = engine_dataset['users', 'table']
+        engine = Engine4A_C(users)
+
+        # Test COUNT
+        metrics_count = PerformanceMetrics('4A-C COUNT')
+        for _ in range(50):
+            metrics_count.start()
+            result = engine.query({"aggregate": {"op": "count"}})
+            metrics_count.stop()
+
+        # Test GROUP BY
+        metrics_group = PerformanceMetrics('4A-C GROUP BY')
+        for _ in range(50):
+            metrics_group.start()
+            result = engine.query({
+                "aggregate": {
+                    "op": "group_by",
+                    "by": "dept",
+                    "field": "salary",
+                    "sub_op": "avg"
+                }
+            })
+            metrics_group.stop()
+
+        print(f"\n{metrics_count.report()}")
+        print(f"\n{metrics_group.report()}")
+
+        assert result['eng'] > 0  # Should have engineering averages
+        assert metrics_count.avg_ms < 10, f"COUNT too slow: {metrics_count.avg_ms:.2f}ms"
+        assert metrics_group.avg_ms < 100, f"GROUP BY too slow: {metrics_group.avg_ms:.2f}ms"
+
+    def test_engine_4age_join_performance(self, engine_dataset):
+        """Benchmark Engine4A_GE join operations."""
+        from db86.engines import Engine4A_GE
+
+        engine = Engine4A_GE(engine_dataset)
+
+        metrics = PerformanceMetrics('4A-GE INNER JOIN')
+
+        for _ in range(50):  # Run 50 times
+            metrics.start()
+            result = engine.query({
+                "tables": [
+                    {"name": "users", "alias": "u"},
+                    {"name": "orders", "alias": "o"}
+                ],
+                "joins": [{
+                    "type": "INNER",
+                    "table": "orders",
+                    "alias": "o",
+                    "on": {"left": "u.key", "op": "eq", "right": "o.user_id"}
+                }],
+                "filter": {
+                    "and": [
+                        {"path": "u.dept", "op": "eq", "value": "eng"},
+                        {"path": "o.amount", "op": "gt", "value": 100},
+                        {"path": "o.status", "op": "eq", "value": "completed"}
+                    ]
+                },
+                "select": ["u.name", "o.product", "o.amount"],
+                "sort": [{"field": "o.amount", "order": "desc"}],
+                "limit": 100
+            })
+            metrics.stop()
+
+        print(f"\n{metrics.report()}")
+        assert len(result) > 0
+        assert metrics.avg_ms < 200, f"JOIN too slow: {metrics.avg_ms:.2f}ms avg"
+
+    def test_engine_4age_cross_table_aggregation(self, engine_dataset):
+        """Benchmark Engine4A_GE cross-table aggregation."""
+        from db86.engines import Engine4A_GE
+
+        engine = Engine4A_GE(engine_dataset)
+
+        metrics = PerformanceMetrics('4A-GE Cross-Table Aggregation')
+
+        for _ in range(30):  # Run 30 times
+            metrics.start()
+            result = engine.query({
+                "tables": [
+                    {"name": "users", "alias": "u"},
+                    {"name": "orders", "alias": "o"}
+                ],
+                "joins": [{
+                    "type": "INNER",
+                    "table": "orders",
+                    "alias": "o",
+                    "on": {"left": "u.key", "op": "eq", "right": "o.user_id"}
+                }],
+                "aggregate": {
+                    "op": "group_by",
+                    "by": "u.dept",
+                    "field": "o.amount",
+                    "sub_op": "sum"
+                }
+            })
+            metrics.stop()
+
+        print(f"\n{metrics.report()}")
+        assert len(result) > 0
+        assert 'eng' in result
+        assert metrics.avg_ms < 300, f"Cross-table agg too slow: {metrics.avg_ms:.2f}ms avg"
+
+    def test_engine_comparison_complex_queries(self, engine_dataset):
+        """Compare 4A-C vs 4A-GE performance on equivalent operations."""
+        from db86.engines import Engine4A_C, Engine4A_GE
+
+        users = engine_dataset['users', 'table']
+        engine_4ac = Engine4A_C(users)
+        engine_4age = Engine4A_GE(engine_dataset)
+
+        # Complex filter spec
+        filter_spec = {
+            "and": [
+                {"path": "age", "op": "gte", "value": 30},
+                {"path": "dept", "op": "in", "value": ["eng", "sales"]},
+                {"path": "salary", "op": "gt", "value": 150000},
+                {"path": "active", "op": "eq", "value": True}
+            ]
+        }
+
+        # Benchmark 4A-C
+        metrics_4ac = PerformanceMetrics('4A-C Complex Query')
+        for _ in range(25):
+            metrics_4ac.start()
+            result_4ac = engine_4ac.query({
+                "filter": filter_spec,
+                "select": ["name", "salary", "dept"],
+                "sort": [{"field": "salary", "order": "desc"}],
+                "limit": 25
+            })
+            metrics_4ac.stop()
+
+        # Benchmark 4A-GE (single table)
+        metrics_4age = PerformanceMetrics('4A-GE Single Table')
+        for _ in range(25):
+            metrics_4age.start()
+            result_4age = engine_4age.query({
+                "tables": [{"name": "users", "alias": "u"}],
+                "filter": filter_spec,
+                "select": ["u.name", "u.salary", "u.dept"],
+                "sort": [{"field": "u.salary", "order": "desc"}],
+                "limit": 25
+            })
+            metrics_4age.stop()
+
+        print(f"\n{metrics_4ac.report()}")
+        print(f"\n{metrics_4age.report()}")
+
+        # Results should be equivalent
+        assert len(result_4ac) == len(result_4age)
+
+        # 4A-GE should be reasonably close in performance for single-table ops
+        overhead_ratio = metrics_4age.avg_ms / metrics_4ac.avg_ms
+        print(".2f")
+        assert overhead_ratio < 3.0, f"4A-GE overhead too high: {overhead_ratio:.2f}x"
+
+    @pytest.mark.slow
+    def test_engine_bulk_operations_performance(self, perf_db_memory):
+        """Benchmark bulk operations with engines."""
+        from db86.engines import Engine4A_GE
+
+        engine = Engine4A_GE(perf_db_memory)
+
+        # Create bulk test data
+        bulk_users = [
+            {"table": "users", "key": f'bulk_user_{i}', "value": {
+                'name': f'BulkUser_{i}',
+                'age': 25 + (i % 30),
+                'dept': ['eng', 'sales', 'mktg'][i % 3],
+                'salary': 60000 + (i * 500),
+                'active': True
+            }}
+            for i in range(1000)
+        ]
+
+        # Benchmark bulk insert
+        metrics_insert = PerformanceMetrics('4A-GE Bulk Insert (1000 items)')
+        metrics_insert.start()
+        insert_count = engine.insert(bulk_users)
+        metrics_insert.stop()
+
+        print(f"\n{metrics_insert.report()}")
+        assert insert_count == 1000
+        assert metrics_insert.avg_ms < 2000, f"Bulk insert too slow: {metrics_insert.elapsed_ms:.0f}ms"
+
+        # Benchmark bulk update
+        metrics_update = PerformanceMetrics('4A-GE Bulk Update (1000 items)')
+        metrics_update.start()
+        update_count = engine.update(
+            {"users.salary": 70000},
+            {"path": "users.dept", "op": "eq", "value": "eng"}
+        )
+        metrics_update.stop()
+
+        print(f"\n{metrics_update.report()}")
+        assert update_count > 0
+        assert metrics_update.avg_ms < 1000, f"Bulk update too slow: {metrics_update.elapsed_ms:.0f}ms"
+
+    def test_engine_memory_efficiency(self, perf_db_memory):
+        """Test memory efficiency of engine operations."""
+        from db86.engines import Engine4A_GE
+
+        # Create large dataset
+        large_data = {}
+        for i in range(10000):
+            large_data[f'user_{i}'] = {
+                'name': f'User_{i}',
+                'data': 'x' * 1000,  # 1KB per record
+                'nested': {'level1': {'level2': list(range(100))}}
+            }
+
+        # Insert large dataset
+        users = perf_db_memory['large_users']
+        start_mem = time.perf_counter()
+        for key, value in large_data.items():
+            users[key] = value
+        perf_db_memory.conn.commit()
+        insert_time = time.perf_counter() - start_mem
+
+        # Query with engine
+        engine = Engine4A_GE(perf_db_memory)
+        start_query = time.perf_counter()
+        result = engine.query({
+            "tables": [{"name": "large_users", "alias": "u"}],
+            "filter": {"path": "u.name", "op": "contains", "value": "User_1"},
+            "select": ["u.name"],
+            "limit": 100
+        })
+        query_time = time.perf_counter() - start_query
+
+        print(f"\n✓ Large dataset (10K records): Insert {insert_time:.2f}s, Query {query_time:.2f}s")
+        assert len(result) > 0
+        assert insert_time < 10, "Large insert too slow"
+        assert query_time < 2, "Large query too slow"
+

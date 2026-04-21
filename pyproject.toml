@@ -53,5 +53,6 @@ markers = [
     "unit: marks tests as unit tests",
     "stress: stress test (heavy load)",
     "performance: performance benchmark",
-    "slow: slow test (>1 second)"
+    "slow: slow test (>1 second)",
+    "engine: engine tests"
 ]
