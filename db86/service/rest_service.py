@@ -950,6 +950,7 @@ def start(ctx, host: str, port: int, workers: int, logfile: Optional[str], logle
 @cli.command('stop', short_help='Stop the DB86 REST Service')
 @click.option('-f', '--force', help='Force Stop', is_flag=True, default=False)
 def stop(force):
+    """Stop the DB86 REST Service daemon."""
     daemon = Daemon('DB86 REST Service', pidfile='db86_rest_service.pid')
     daemon.stop(force=force)
 
@@ -957,6 +958,7 @@ def stop(force):
 @cli.command('status', short_help='DB86 REST Service Status')
 @click.option('-j', '--json', help='Return Status JSON', default=False, is_flag=True)
 def status(json):
+    """Print the status of the DB86 REST Service daemon."""
     daemon = Daemon('DB86 REST Service', pidfile='db86_rest_service.pid')
     daemon.status(json=json)
 
@@ -977,6 +979,7 @@ def status(json):
 @click.option("--reload", is_flag=True, default=False, help="Enable auto-reload for development (not recommended with workers > 1).")
 @click.pass_context
 def restart(ctx, host, port, workers, logfile, loglevel, reload, force):
+    """Restart the DB86 REST Service daemon (stop then start)."""
     ctx.invoke(stop, force=force)
     ctx.invoke(start, host=host, port=port, workers=workers, logfile=logfile, loglevel=loglevel, reload=reload)
 

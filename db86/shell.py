@@ -11,6 +11,7 @@ from .storages import JSONStorage, Table
 
 
 def pretty_print(value):
+    """Pretty-print a value to the terminal using ``pprint`` for containers."""
     if value is None:
         click.echo('None')
         return
@@ -21,6 +22,7 @@ def pretty_print(value):
 
 
 def parse_value(value):
+    """Attempt to parse *value* as JSON, then as a Python literal, falling back to a raw string."""
     if isinstance(value, (dict, list, tuple)):
         return value
     try:
@@ -35,6 +37,7 @@ def parse_value(value):
 
 
 def ensure_db_store(ctx):
+    """Ensure that ``ctx.obj['db_store']`` exists and return it."""
     ctx.ensure_object(dict)
     if 'db_store' not in ctx.obj:
         ctx.obj['db_store'] = {}
@@ -42,6 +45,7 @@ def ensure_db_store(ctx):
 
 
 def get_db(ctx, db_name):
+    """Retrieve an open database by name, or raise a ``ClickException``."""
     db_store = ensure_db_store(ctx)
     if db_name not in db_store:
         raise click.ClickException(f"Database '{db_name}' is not open.")
@@ -49,6 +53,7 @@ def get_db(ctx, db_name):
 
 
 def get_storage(db, storage_name):
+    """Retrieve a storage from *db* by name, auto-detecting its type."""
     if storage_name not in db.storages:
         raise click.ClickException(f"Storage '{storage_name}' does not exist in database '{db.filename}'.")
     cols = db.conn.select(f'PRAGMA TABLE_INFO("{storage_name}")')
@@ -59,6 +64,7 @@ def get_storage(db, storage_name):
 
 
 def items_from_table(storage):
+    """Return all rows from a ``Table`` storage as a list of dicts."""
     rows = []
     for key in storage:
         values = storage[key]
@@ -70,10 +76,12 @@ def items_from_table(storage):
 
 
 def items_from_json(storage):
+    """Return all items from a ``JSONStorage`` as a dict."""
     return storage.to_dict()
 
 
 def cleanup(ctx):
+    """Close all open databases and print a goodbye message."""
     click.echo("Autoclean...")
     if 'db_store' in ctx.obj:
         for name, db in ctx.obj['db_store'].items():
@@ -90,6 +98,7 @@ def cleanup(ctx):
 )
 @click.pass_context
 def cli(ctx):
+    """DB86 interactive management shell entry point."""
     ctx.ensure_object(dict)
     if 'db_store' not in ctx.obj:
         ctx.obj['db_store'] = {}
@@ -98,6 +107,7 @@ def cli(ctx):
 @cli.command('databases', short_help='List open databases')
 @click.pass_context
 def list_databases(ctx):
+    """List the names of all currently open databases."""
     db_store = ensure_db_store(ctx)
     pretty_print(list(db_store.keys()))
 
@@ -110,6 +120,7 @@ def list_databases(ctx):
 @click.argument('db', type=str)
 @click.pass_context
 def create_database(ctx, autocommit, journal_mode, flag, memory, db):
+    """Create or open a database and add it to the shell session."""
     db_store = ensure_db_store(ctx)
     if db in db_store:
         click.echo(f"Database '{db}' is already open.")
@@ -123,6 +134,7 @@ def create_database(ctx, autocommit, journal_mode, flag, memory, db):
 @click.argument('db', default='', required=False)
 @click.pass_context
 def close_database(ctx, db):
+    """Close one or all open databases in the shell session."""
     db_store = ensure_db_store(ctx)
     if db == '':
         for name, database in list(db_store.items()):
@@ -143,6 +155,7 @@ def close_database(ctx, db):
 @click.option('--offset', type=int, default=0)
 @click.pass_context
 def list_contents(ctx, path, limit, offset):
+    """Navigate and list databases, storages, or storage items by path."""
     db_store = ensure_db_store(ctx)
     if path in ('/', ''):
         pretty_print(sorted(db_store.keys()))
@@ -175,6 +188,7 @@ def list_contents(ctx, path, limit, offset):
 @click.argument('db', required=True)
 @click.pass_context
 def list_storages(ctx, db):
+    """List all storages in the specified database."""
     db = get_db(ctx, db)
     pretty_print(sorted(db.storages))
 
@@ -185,6 +199,7 @@ def list_storages(ctx, db):
 @click.argument('storage', type=str)
 @click.pass_context
 def create_storage(ctx, storage_type, db, storage):
+    """Create a new storage (JSON or Table) inside a database."""
     db = get_db(ctx, db)
     if storage in db.storages:
         raise click.ClickException(f"Storage '{storage}' already exists in database '{db.filename}'.")
@@ -200,6 +215,7 @@ def create_storage(ctx, storage_type, db, storage):
 @click.argument('storage', type=str)
 @click.pass_context
 def delete_storage(ctx, db, storage):
+    """Delete a storage and its data from a database."""
     db = get_db(ctx, db)
     if storage not in db.storages:
         raise click.ClickException(f"Storage '{storage}' does not exist in database '{db.filename}'.")
@@ -212,6 +228,7 @@ def delete_storage(ctx, db, storage):
 @click.argument('storage', type=str)
 @click.pass_context
 def storage_info(ctx, db, storage):
+    """Display metadata (type, columns, length) for a storage."""
     db = get_db(ctx, db)
     storage_obj = get_storage(db, storage)
     metadata = {
@@ -230,6 +247,7 @@ def storage_info(ctx, db, storage):
 @click.option('--offset', type=int, default=0)
 @click.pass_context
 def list_items(ctx, db, storage, limit, offset):
+    """List all items in a storage with optional pagination."""
     db = get_db(ctx, db)
     storage_obj = get_storage(db, storage)
     if isinstance(storage_obj, JSONStorage):
@@ -250,6 +268,7 @@ def list_items(ctx, db, storage, limit, offset):
 @click.argument('query', type=str)
 @click.pass_context
 def get_query(ctx, db, store, query):
+    """Query a JSON storage by path or retrieve an item by key across databases."""
     db_store = ensure_db_store(ctx)
     if not db_store:
         raise click.ClickException('No open databases.')
@@ -289,6 +308,7 @@ def get_query(ctx, db, store, query):
 @click.argument('key', type=str)
 @click.pass_context
 def get_item(ctx, db, storage, key):
+    """Read and display a single item from a storage by key."""
     db = get_db(ctx, db)
     storage_obj = get_storage(db, storage)
     item = storage_obj[key]
@@ -303,6 +323,7 @@ def get_item(ctx, db, storage, key):
 @click.option('--storage-type', default=None, type=click.Choice(['json', 'table']), help='If storage does not exist, create it as this type.')
 @click.pass_context
 def put_item(ctx, db, storage, key, value, storage_type):
+    """Create or update a storage item, auto-creating the storage if needed."""
     db = get_db(ctx, db)
     if storage not in db.storages:
         if storage_type is None:
@@ -335,6 +356,7 @@ def put_item(ctx, db, storage, key, value, storage_type):
 @click.argument('key', type=str)
 @click.pass_context
 def delete_item(ctx, db, storage, key):
+    """Delete a single item from a storage by key."""
     db = get_db(ctx, db)
     storage_obj = get_storage(db, storage)
     del storage_obj[key]

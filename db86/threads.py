@@ -74,6 +74,25 @@ class SqliteMultiThread(Thread):
 
     def __init__(self, filename: str, autocommit: bool,
                  journal_mode: str, timeout: float = 5.0):
+        """Initialise the worker thread and open the SQLite connection.
+
+        Parameters
+        ----------
+        filename : str
+            Path to the SQLite database file, or ``':memory:'``.
+        autocommit : bool
+            When ``True``, every write is committed immediately (unless
+            inside an explicit transaction).
+        journal_mode : str
+            SQLite journal mode pragma (e.g. ``'WAL'``, ``'DELETE'``).
+        timeout : float
+            Maximum seconds to wait for the worker thread to start.
+
+        Raises
+        ------
+        TimeoutError
+            If the worker thread fails to become ready within *timeout*.
+        """
         super().__init__(daemon=True, name=f"db86-sqlite-{filename}")
         self.filename         = filename
         self.autocommit       = autocommit
@@ -99,6 +118,13 @@ class SqliteMultiThread(Thread):
     # ------------------------------------------------------------------
 
     def run(self) -> None:
+        """Worker thread body — opens the connection and processes requests.
+
+        This method runs in a dedicated daemon thread. It opens a
+        ``sqlite3.Connection``, configures pragmas, and enters an
+        infinite loop that dequeues and dispatches request dataclasses
+        until a ``_CloseReq`` is received.
+        """
         try:
             conn = sqlite3.connect(
                 self.filename,
@@ -172,6 +198,11 @@ class SqliteMultiThread(Thread):
     # ------------------------------------------------------------------
 
     def _raise_if_error(self) -> None:
+        """Re-raise the last error captured by the worker thread.
+
+        If the worker stored an exception from a previous operation,
+        this method clears it and raises it on the calling thread.
+        """
         if (exc := self._error) is not None:
             self._error = None
             raise exc
@@ -183,6 +214,15 @@ class SqliteMultiThread(Thread):
         self._reqs.put(_ExecReq(sql=sql, args=args or (), result=res))
 
     def executemany(self, sql: str, items: list[tuple]) -> None:
+        """Execute *sql* once for each parameter set in *items* (blocking).
+
+        Parameters
+        ----------
+        sql : str
+            SQL statement with parameter placeholders.
+        items : list[tuple]
+            Sequence of parameter tuples to bind on each iteration.
+        """
         self._raise_if_error()
         q: SimpleQueue = SimpleQueue()
         self._reqs.put(_ManyReq(sql=sql, rows=list(items), result=q))
@@ -204,6 +244,15 @@ class SqliteMultiThread(Thread):
         return rows[0] if rows else None
 
     def commit(self, blocking: bool = True) -> None:
+        """Commit the current transaction to disk.
+
+        Parameters
+        ----------
+        blocking : bool
+            When ``True`` (default), blocks until the commit completes
+            and re-raises any worker-side error.  When ``False``, the
+            commit is enqueued but the caller returns immediately.
+        """
         q: SimpleQueue | None = SimpleQueue() if blocking else None
         self._reqs.put(_CommitReq(result=q))
         if blocking:
@@ -211,6 +260,14 @@ class SqliteMultiThread(Thread):
             self._raise_if_error()
 
     def close(self, force: bool = False) -> None:
+        """Close the SQLite connection and stop the worker thread.
+
+        Parameters
+        ----------
+        force : bool
+            When ``True``, enqueue the close request but do not wait
+            for completion or join the thread.
+        """
         q: SimpleQueue = SimpleQueue()
         self._reqs.put(_CloseReq(result=q))
         if not force:
