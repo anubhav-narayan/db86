@@ -154,6 +154,15 @@ class Engine4A_C(Engine):
     """
 
     def __init__(self, storage: Union[Table, JSONStorage]):
+        """Initialise the 4A-C engine for a single storage backend.
+
+        Parameters
+        ----------
+        storage : Table | JSONStorage
+            The storage object to query against.  Determines
+            whether SQL expressions use ``json_extract`` or
+            plain column references.
+        """
         self.storage = storage
         if isinstance(storage, JSONStorage):
             self.conn = storage._JSONStorage__conn
@@ -463,6 +472,18 @@ class Engine4A_GE(Engine):
     """
 
     def __init__(self, database, enable_parallel=True, max_workers=None):
+        """Initialise the 4A-GE multi-table engine.
+
+        Parameters
+        ----------
+        database : Database
+            The database containing multiple tables/storages.
+        enable_parallel : bool
+            Enable parallel compilation of complex filter expressions.
+        max_workers : int | None
+            Maximum thread-pool workers for parallel operations.
+            Defaults to ``min(4, cpu_count)``.
+        """
         self.database = database
         # Get connection from database
         self.conn = database.conn

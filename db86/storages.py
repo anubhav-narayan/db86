@@ -38,6 +38,22 @@ class Table(UserDict):
 
     def __init__(self, name: str, connection: SqliteMultiThread, flag: str,
                  primary_key_dtype: str = 'TEXT'):
+        """Initialise a Table wrapper for a SQLite standard table.
+
+        If the table does not already exist, it is created with a
+        ``key`` primary-key column and a default ``col1`` text column.
+
+        Parameters
+        ----------
+        name : str
+            Table name in the database.
+        connection : SqliteMultiThread
+            The thread-safe database connection.
+        flag : str
+            Access mode: ``'c'``, ``'r'``, or ``'w'``.
+        primary_key_dtype : str
+            SQLite data type for the primary key column (default ``'TEXT'``).
+        """
         self.__conn = connection
         self.flag = flag
         self.name = name.replace('"', '""')
@@ -58,6 +74,13 @@ class Table(UserDict):
             self.__conn.commit()
 
     def describe(self) -> str:
+        """Return a grid-formatted description of the table's columns.
+
+        Returns
+        -------
+        str
+            Table column info formatted by ``tabulate``.
+        """
         GET_COLS = f'PRAGMA TABLE_INFO("{self.name}")'
         data = self.__conn.select(GET_COLS)
         head = ['cid', 'name', 'type', 'notnull', 'default', 'primary key']
@@ -66,6 +89,7 @@ class Table(UserDict):
 
     @property
     def xschema(self) -> dict:
+        """Return the table schema as a dict with name, columns, and SQL."""
         GET_SQL = f'SELECT sql FROM sqlite_master WHERE "name" = "{self.name}"'
         schema = self.__conn.select_one(GET_SQL)[0]
         return {
@@ -84,18 +108,39 @@ class Table(UserDict):
         return [x[1] for x in data]
 
     def __enter__(self):
+        """Enter the context manager; raise if not connected."""
         if not hasattr(self, 'conn') or self.conn is None:
             raise RuntimeError('Instance not connected')
         return self
 
     def __exit__(self, *exc_info):
+        """Exit the context manager, committing if autocommit is active."""
         if self.__conn.autocommit and self.__conn.transaction_depth == 0:
             self.commit()
 
     def __repr__(self):
+        """Return a readable string representation of the table."""
         return f'Table: {self.name}'
 
     def __setitem__(self, key, value):
+        """Insert or update a row identified by *key*.
+
+        Parameters
+        ----------
+        key
+            Primary key value for the row.
+        value : tuple | dict
+            If a ``tuple``, values are inserted in column order
+            (excluding the primary key).  If a ``dict``, it may
+            insert or update depending on whether *key* already exists.
+
+        Raises
+        ------
+        RuntimeError
+            If the table is opened in read-only mode.
+        TypeError
+            If *value* is neither a ``tuple`` nor a ``dict``.
+        """
         if self.flag == 'r':
             raise RuntimeError('Refusing to write in read-only mode')
 
@@ -147,12 +192,43 @@ class Table(UserDict):
         return [x for x in item][::slc.step]
 
     def get_col(self, col):
+        """Return all values of a single column as a list.
+
+        Parameters
+        ----------
+        col : str
+            Column name to retrieve.
+
+        Returns
+        -------
+        list
+            One value per row, in ``rowid`` order.
+        """
         GET_ITEM = f'SELECT "{col}" FROM "{self.name}"'\
                  + 'ORDER BY rowid'
         item = self.__conn.select(GET_ITEM)
         return [x[0] for x in item]
 
     def get_col_sel(self, col, idx):
+        """Select specific columns for a single row by primary key.
+
+        Parameters
+        ----------
+        col : tuple[str, ...]
+            Column names to retrieve.
+        idx
+            Primary key value of the target row.
+
+        Returns
+        -------
+        tuple
+            Values for the requested columns.
+
+        Raises
+        ------
+        KeyError
+            If no row matches *idx*.
+        """
         cols = ', '.join([x for x in col])
         GET_ITEM = f'SELECT {cols} FROM "{self.name}"'\
             + f'WHERE "{self.columns[0]}" = ?'\
@@ -190,6 +266,17 @@ class Table(UserDict):
             return [x for x in item][::slc.step]
 
     def __getitem__(self, args):
+        """Retrieve rows by primary key, index, column, slice, or filter.
+
+        Supports multiple access patterns:
+
+        - ``table[key]`` – row by primary key (str) or ``rowid`` (int).
+        - ``table[start:stop]`` – rows by ``rowid`` range.
+        - ``table['col_name']`` – all values of that column.
+        - ``table[key, 'col1', 'col2']`` – selected columns for a key.
+        - ``table['col', value]`` – rows where ``col == value``.
+        - ``table['col', start:stop]`` – rows filtered by column range.
+        """
         # args is key
         if type(args) is not tuple:
             if isinstance(args, slice):
@@ -222,10 +309,20 @@ class Table(UserDict):
                     return [x for x in item]
 
     def __contains__(self, key):
+        """Return ``True`` if a row with the given primary key exists."""
         HAS_ITEM = f'SELECT 1 FROM "{self.name}" WHERE "{self.columns[0]}" = ?'
         return self.__conn.select_one(HAS_ITEM, (key,)) is not None
 
     def __delitem__(self, key):
+        """Delete the row with the given primary key.
+
+        Raises
+        ------
+        RuntimeError
+            If the table is opened in read-only mode.
+        KeyError
+            If *key* is not found.
+        """
         if self.flag == 'r':
             raise RuntimeError('Refusing to delete in read-only mode')
         if key not in self:
@@ -236,16 +333,27 @@ class Table(UserDict):
             self.commit()
 
     def rename(self):
+        """Placeholder for table rename logic (not yet implemented)."""
         if self.flag == 'r':
             raise RuntimeError('Refusing to delete in read-only mode')
 
     def __iter__(self):
+        """Iterate over all primary key values in ``rowid`` order."""
         GET_KEYS = f'SELECT "{self.columns[0]}" FROM "{self.name}"\
                      ORDER BY rowid'
         for x in self.__conn.select(GET_KEYS):
             yield x[0]
 
     def add_foreign_key(self, colname: str, references: str):
+        """Add a new TEXT column with a FOREIGN KEY reference.
+
+        Parameters
+        ----------
+        colname : str
+            Name of the new column.
+        references : str
+            Referenced table name for the foreign key constraint.
+        """
         if self.flag == 'r':
             raise RuntimeError('Refusing to delete in read-only mode')
 
@@ -294,6 +402,7 @@ class Table(UserDict):
             self.commit()
 
     def __len__(self):
+        """Return the number of rows in the table."""
         GET_LEN = f'SELECT COUNT(*) FROM "{self.name}"'
         rows = self.__conn.select_one(GET_LEN)[0]
         return rows if rows is not None else 0
@@ -360,8 +469,29 @@ class Table(UserDict):
 
 
 class JSONStorage(UserDict):
+    """Dict-like wrapper around a SQLite table storing JSON documents.
+
+    Each entry is a ``(key TEXT, object TEXT)`` row where ``object``
+    contains a JSON-serialised Python dictionary.
+    """
     def __init__(self, name: str, connection: SqliteMultiThread, flag: str,
                  primary_key_dtype: str = 'TEXT'):
+        """Initialise a JSONStorage wrapper.
+
+        If the underlying table does not exist, it is created with
+        ``key`` and ``object`` columns.
+
+        Parameters
+        ----------
+        name : str
+            Table name in the database.
+        connection : SqliteMultiThread
+            The thread-safe database connection.
+        flag : str
+            Access mode: ``'c'``, ``'r'``, or ``'w'``.
+        primary_key_dtype : str
+            SQLite data type for the primary key column.
+        """
         self.__conn = connection
         self.flag = flag
         self.name = name.replace('"', '""')
@@ -381,6 +511,7 @@ class JSONStorage(UserDict):
             self.__conn.commit(False)
 
     def describe(self):
+        """Return a grid-formatted description of the storage's columns."""
         GET_COLS = f'PRAGMA TABLE_INFO("{self.name}")'
         data = self.__conn.select(GET_COLS)
         head = ['cid', 'name', 'type', 'notnull', 'default', 'primary key']
@@ -389,6 +520,7 @@ class JSONStorage(UserDict):
 
     @property
     def xschema(self):
+        """Return the storage schema as a dict with name, columns, and SQL."""
         GET_SQL = f'SELECT sql FROM sqlite_master WHERE "name" = "{self.name}"'
         schema = self.__conn.select_one(GET_SQL)[0]
         return {
@@ -398,32 +530,50 @@ class JSONStorage(UserDict):
         }
 
     def __enter__(self):
+        """Enter the context manager; raise if not connected."""
         if not hasattr(self, 'conn') or self.conn is None:
             raise RuntimeError('Instance not connected')
         return self
 
     def __exit__(self, *exc_info):
+        """Exit the context manager, committing if autocommit is active."""
         if self.__conn.autocommit and self.__conn.transaction_depth == 0:
             self.commit()
 
     def __repr__(self):
+        """Return a readable string representation of the storage."""
         return f'JSON Storage: {self.name}'
 
     def __len__(self):
+        """Return the number of entries in the storage."""
         GET_LEN = f'SELECT COUNT(rowid) FROM "{self.name}"'
         rows = self.__conn.select_one(GET_LEN)[0]
         return rows if rows is not None else 0
 
     def __contains__(self, key):
+        """Return ``True`` if *key* exists in the storage."""
         HAS_ITEM = f'SELECT 1 FROM "{self.name}" WHERE "key" = ?'
         return self.__conn.select_one(HAS_ITEM, (key,)) is not None
 
     def __iter__(self):
+        """Iterate over all keys in ``rowid`` order."""
         GET_KEYS = f'SELECT "key" FROM "{self.name}" ORDER BY rowid'
         for x in self.__conn.select(GET_KEYS):
             yield x[0]
 
     def __setitem__(self, key, value: dict):
+        """Insert or replace a JSON document identified by *key*.
+
+        If *key* contains ``'/'``, delegates to :meth:`set_path` for
+        nested path assignment.
+
+        Raises
+        ------
+        RuntimeError
+            If opened in read-only mode.
+        TypeError
+            If *value* is not a ``dict``.
+        """
         if self.flag == 'r':
             raise RuntimeError('Refusing to write in read-only mode')
 
@@ -442,6 +592,21 @@ ON CONFLICT(key) DO UPDATE SET object = excluded.object;'
             self.commit()
 
     def __getitem__(self, key):
+        """Retrieve the JSON document stored under *key*.
+
+        If *key* contains ``'/'``, it is treated as a path query
+        via :meth:`get_path`.
+
+        Returns
+        -------
+        dict
+            The deserialised JSON document.
+
+        Raises
+        ------
+        KeyError
+            If *key* is not found.
+        """
         import json
         if "/" in key:
             return [value for value in self.get_path(key)][0]
@@ -452,6 +617,15 @@ ON CONFLICT(key) DO UPDATE SET object = excluded.object;'
         return json.loads(item[0])
 
     def __delitem__(self, key):
+        """Delete the document stored under *key*.
+
+        Raises
+        ------
+        RuntimeError
+            If opened in read-only mode.
+        KeyError
+            If *key* is not found.
+        """
         if self.flag == 'r':
             raise RuntimeError('Refusing to delete in read-only mode')
         if key not in self:
@@ -671,12 +845,14 @@ ON CONFLICT(key) DO UPDATE SET object = excluded.object;'
             self.__conn.commit(blocking)
 
     def to_dict(self):
+        """Return all entries as a plain ``{key: value}`` dict."""
         ret_dict = {}
         for x in self.keys():
             ret_dict[x] = self[x]
         return ret_dict
 
     def to_json(self):
+        """Serialise the entire storage to a JSON string."""
         import json
         return json.dumps(self.to_dict())
     
@@ -1013,6 +1189,27 @@ class TableView(UserDict):
 
     def __init__(self, name: str, connection: SqliteMultiThread, flag: str,
                  create_sql: str | None = None):
+        """Initialise a TableView wrapper for a SQLite view.
+
+        If the view does not exist and *create_sql* is provided, the
+        view is created automatically.
+
+        Parameters
+        ----------
+        name : str
+            View name in the database.
+        connection : SqliteMultiThread
+            The thread-safe database connection.
+        flag : str
+            Access mode (views are always read-only in practice).
+        create_sql : str | None
+            ``SELECT`` query to define the view if it does not exist.
+
+        Raises
+        ------
+        RuntimeError
+            If the view does not exist and no *create_sql* was given.
+        """
         self.__conn = connection
         self.flag = flag
         self.name = name.replace('"', '""')
@@ -1028,6 +1225,7 @@ class TableView(UserDict):
             self.__conn.commit()
 
     def describe(self):
+        """Return a grid-formatted description of the view's columns."""
         GET_COLS = f'PRAGMA TABLE_INFO("{self.name}")'
         data = self.__conn.select(GET_COLS)
         head = ['cid', 'name', 'type', 'notnull', 'default', 'primary key']
@@ -1036,6 +1234,7 @@ class TableView(UserDict):
 
     @property
     def xschema(self):
+        """Return the view schema as a dict with name, columns, and SQL."""
         GET_SQL = f'SELECT sql FROM sqlite_master WHERE "name" = "{self.name}"'
         schema = self.__conn.select_one(GET_SQL)[0]
         return {
@@ -1046,11 +1245,21 @@ class TableView(UserDict):
 
     @property
     def columns(self):
+        """Return a list of column names in the view."""
         GET_COLS = f'PRAGMA TABLE_INFO("{self.name}")'
         data = self.__conn.select(GET_COLS)
         return [x[1] for x in data]
 
     def __getitem__(self, args):
+        """Retrieve rows by slice, index, column name, or filter tuple.
+
+        Supports:
+
+        - ``view[start:stop]`` – rows by offset range.
+        - ``view[idx]`` – single row by integer offset.
+        - ``view['col']`` – all values of a column.
+        - ``view['col', value]`` – rows where ``col == value``.
+        """
         if isinstance(args, slice):
             GET = f'SELECT * FROM "{self.name}" LIMIT ? OFFSET ?'
             result = self.__conn.select(GET, (args.stop - args.start, args.start))
@@ -1079,21 +1288,26 @@ class TableView(UserDict):
         raise TypeError("Unsupported key type")
 
     def __contains__(self, key):
+        """Return ``True`` if a row with the given ``rowid`` exists."""
         CHECK = f'SELECT 1 FROM "{self.name}" WHERE _rowid_ = ?'
         return self.__conn.select_one(CHECK, (key,)) is not None
 
     def keys(self):
+        """Iterate over all ``rowid`` values in the view."""
         GET_KEYS = f'SELECT rowid FROM "{self.name}" ORDER BY rowid'
         for x in self.__conn.select(GET_KEYS):
             yield x[0]
 
     def __iter__(self):
+        """Iterate over the view's ``rowid`` values."""
         return self.keys()
 
     def __repr__(self):
+        """Return a readable string representation of the view."""
         return f'TableView: {self.name}'
 
     def __len__(self):
+        """Return the number of rows in the view."""
         GET_LEN = f'SELECT COUNT(*) FROM "{self.name}"'
         count = self.__conn.select_one(GET_LEN)
         return count[0] if count else 0

@@ -12,6 +12,7 @@ import click_shell
 local_storage: list = []
 
 def cleanup(ctx):
+    """Close all databases opened during this shell session and shut down."""
     for x in local_storage:
         api_request(ctx.obj['base_url'], 'POST', f'/databases/{urllib.parse.quote(x)}/close')
     local_storage.clear()
@@ -89,6 +90,7 @@ def cli(ctx, base_url):
 @cli.command('health', short_help='Check REST service health')
 @click.pass_context
 def health(ctx):
+    """Check the health / uptime of the REST service."""
     response = api_request(ctx.obj['base_url'], 'GET', '/')
     print_response(response)
 
@@ -96,6 +98,7 @@ def health(ctx):
 @cli.command('databases', short_help='List open databases')
 @click.pass_context
 def list_databases(ctx):
+    """List all databases currently open on the REST service."""
     response = api_request(ctx.obj['base_url'], 'GET', '/databases')
     print_response(response)
 
@@ -108,6 +111,7 @@ def list_databases(ctx):
 @click.argument('db', type=str)
 @click.pass_context
 def create_database(ctx, autocommit, journal_mode, flag, memory, db):
+    """Create a new database via the REST service."""
     payload = {
         'name': db,
         'autocommit': autocommit,
@@ -124,6 +128,7 @@ def create_database(ctx, autocommit, journal_mode, flag, memory, db):
 @click.argument('db', type=str)
 @click.pass_context
 def close_database(ctx, db):
+    """Close a database via the REST service."""
     response = api_request(ctx.obj['base_url'], 'POST', f'/databases/{urllib.parse.quote(db)}/close')
     print_response(response)
     local_storage.remove(db)
@@ -133,6 +138,7 @@ def close_database(ctx, db):
 @click.argument('path', type=str, default='/')
 @click.pass_context
 def list_contents(ctx, path):
+    """Navigate REST resources by path: /, db, db/storage, or db/storage/query."""
     if path == '/' or path == '':
         response = api_request(ctx.obj['base_url'], 'GET', '/databases')
         print_response(response)
@@ -151,6 +157,7 @@ def list_contents(ctx, path):
 @click.argument('db', type=str, required=False)
 @click.pass_context
 def list_storages(ctx, db):
+    """List storages for a database via the REST service."""
     if db is None:
         db = ctx.obj['current_db']
         if not db:
@@ -166,6 +173,7 @@ def list_storages(ctx, db):
 @click.argument('storage', type=str)
 @click.pass_context
 def create_storage(ctx, storage_type, db, storage):
+    """Create a new storage in a database via the REST service."""
     payload = {'name': storage, 'storage_type': storage_type}
     response = api_request(ctx.obj['base_url'], 'POST', f'/databases/{urllib.parse.quote(db)}/storages', data=payload)
     print_response(response)
@@ -176,6 +184,7 @@ def create_storage(ctx, storage_type, db, storage):
 @click.argument('storage', type=str)
 @click.pass_context
 def delete_storage(ctx, db, storage):
+    """Delete a storage from a database via the REST service."""
     response = api_request(ctx.obj['base_url'], 'DELETE', f'/databases/{urllib.parse.quote(db)}/storages/{urllib.parse.quote(storage)}')
     print_response(response)
 
@@ -185,6 +194,7 @@ def delete_storage(ctx, db, storage):
 @click.argument('storage', type=str)
 @click.pass_context
 def storage_info(ctx, db, storage):
+    """Display metadata for a specific storage via the REST service."""
     response = api_request(ctx.obj['base_url'], 'GET', f'/databases/{urllib.parse.quote(db)}/storages/{urllib.parse.quote(storage)}')
     print_response(response)
 
@@ -196,6 +206,7 @@ def storage_info(ctx, db, storage):
 @click.option('--offset', type=int, default=0)
 @click.pass_context
 def list_items(ctx, db, storage, limit, offset):
+    """List items in a storage with optional pagination via the REST service."""
     if db is None:
         db = ctx.obj['current_db']
         if not db:
@@ -221,6 +232,7 @@ def list_items(ctx, db, storage, limit, offset):
 @click.argument('query', type=str)
 @click.pass_context
 def get(ctx, db, storage, query):
+    """Query a JSON storage path across one or all databases and storages."""
     if db == '':
         db = ctx.obj['current_db'] or ''
     if storage == '':
@@ -256,6 +268,7 @@ def get(ctx, db, storage, query):
 @click.argument('key', type=str)
 @click.pass_context
 def get_item(ctx, db, storage, key):
+    """Read a single item from a storage by key via the REST service."""
     response = api_request(ctx.obj['base_url'], 'GET', f'/databases/{urllib.parse.quote(db)}/storages/{urllib.parse.quote(storage)}/items/{urllib.parse.quote(key)}')
     print_response(response)
 
@@ -267,6 +280,7 @@ def get_item(ctx, db, storage, key):
 @click.argument('items', type=str)
 @click.pass_context
 def bulk_upsert(ctx, db, storage, items, storage_type):
+    """Bulk upsert multiple items (given as a JSON object) into a storage."""
     try:
         parsed = json.loads(items)
     except json.JSONDecodeError as exc:
@@ -291,6 +305,7 @@ def bulk_upsert(ctx, db, storage, items, storage_type):
 @click.argument('value', type=str)
 @click.pass_context
 def put_item(ctx, db, storage, key, value):
+    """Create or update a single item in a storage via the REST service."""
     try:
         item_value = json.loads(value)
     except json.JSONDecodeError:
@@ -306,6 +321,7 @@ def put_item(ctx, db, storage, key, value):
 @click.argument('key', type=str)
 @click.pass_context
 def delete_item(ctx, db, storage, key):
+    """Delete a single item from a storage via the REST service."""
     response = api_request(ctx.obj['base_url'], 'DELETE', f'/databases/{urllib.parse.quote(db)}/storages/{urllib.parse.quote(storage)}/items/{urllib.parse.quote(key)}')
     print_response(response)
 
