@@ -6,7 +6,12 @@ import os
 import threading
 from typing import Any, Dict, Optional
 import click
-from daemonocle import Daemon
+try:
+    from daemonocle import Daemon
+except Exception:
+    Daemon = None
+
+
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse, StreamingResponse
