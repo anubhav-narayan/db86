@@ -6,7 +6,10 @@ import os
 import threading
 from typing import Any, Dict, Optional
 import click
-from daemonocle import Daemon
+try:
+    from daemonocle import Daemon
+except ImportError:
+    Daemon = None
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -288,6 +291,8 @@ async def lifespan(app: FastAPI):
     log.info("Goodbye!")
 
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI(
     title="DB86 REST Service",
     description="REST service for DB86 based SQLite3 databases",
@@ -295,8 +300,17 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 @app.get("/")
+@app.get("/health")
 def health_check():
     """
     Health check endpoint.
@@ -859,6 +873,22 @@ def query_storage_path(
     except Exception as exc:
         log.error(f"Failed to query path '{query}' in storage '{storage_name}' in database '{db_name}': {exc}")
         raise HTTPException(status_code=500, detail="Failed to query storage path")
+
+from fastapi.staticfiles import StaticFiles
+
+# Mount UI static directory if built
+possible_ui_paths = [
+    os.path.join(os.path.dirname(__file__), "..", "..", "..", "db86-ui", "dist"),
+    os.path.join(os.path.dirname(__file__), "..", "ui", "dist"),
+    os.path.abspath("db86-ui/dist"),
+    os.path.abspath("../db86-ui/dist"),
+]
+
+for ui_path in possible_ui_paths:
+    if os.path.exists(ui_path) and os.path.isdir(ui_path):
+        log.info("Mounting DB86 Atlas UI from %s at /ui", ui_path)
+        app.mount("/ui", StaticFiles(directory=ui_path, html=True), name="ui")
+        break
 
 # Server daemon CLI using Click
 
