@@ -293,11 +293,21 @@ async def lifespan(app: FastAPI):
     log.info("Goodbye!")
 
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI(
     title="DB86 REST Service",
     description="REST service for DB86 based SQLite3 databases",
     version='0.2.0',
     lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
