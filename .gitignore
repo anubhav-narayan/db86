@@ -2,3 +2,30 @@
 
 *__pycache__*
 *.pytest_cache*
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+
+# Node & UI
+node_modules/
+ui/node_modules/
+.npm
+npm-debug.log*
+
+# Databases & local logs
+*.db
+*.db-shm
+*.db-wal
+*.pid
+*.log
+
+# IDEs & Editor configs
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store

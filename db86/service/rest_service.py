@@ -878,9 +878,12 @@ from fastapi.staticfiles import StaticFiles
 
 # Mount UI static directory if built
 possible_ui_paths = [
+    os.path.join(os.path.dirname(__file__), "..", "..", "ui", "dist"),
     os.path.join(os.path.dirname(__file__), "..", "..", "..", "db86-ui", "dist"),
     os.path.join(os.path.dirname(__file__), "..", "ui", "dist"),
+    os.path.abspath("ui/dist"),
     os.path.abspath("db86-ui/dist"),
+    os.path.abspath("../ui/dist"),
     os.path.abspath("../db86-ui/dist"),
 ]
 

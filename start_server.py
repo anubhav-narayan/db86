@@ -20,6 +20,7 @@ def main():
     print(f"=================================================")
     print(f"  DB86 Local Database REST Server")
     print(f"  Listening on: http://{args.host}:{args.port}")
+    print(f"  Web UI:       http://{args.host}:{args.port}/ui")
     print(f"  Swagger Docs: http://{args.host}:{args.port}/docs")
     print(f"=================================================")
 

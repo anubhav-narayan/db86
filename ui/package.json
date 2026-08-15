@@ -1,0 +1,17 @@
+{
+  "name": "db86-atlas-studio",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --port 5173",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "lucide": "^0.475.0"
+  },
+  "devDependencies": {
+    "vite": "^6.1.0"
+  }
+}
