@@ -14,6 +14,102 @@ export function setBaseUrl(url) {
   localStorage.setItem('db86_host', baseUrl);
 }
 
+export function parseFilterValue(rawValue) {
+  if (rawValue === undefined || rawValue === null) return undefined;
+  const value = String(rawValue).trim();
+  if (value === '') return '';
+
+  const lower = value.toLowerCase();
+  if (lower === 'true') return true;
+  if (lower === 'false') return false;
+  if (lower === 'null') return null;
+  if (value === '[]' || value === '{}') {
+    try {
+      return JSON.parse(value);
+    } catch (_) {
+      return value;
+    }
+  }
+  if (!Number.isNaN(Number(value)) && value !== '') {
+    return Number(value);
+  }
+
+  try {
+    return JSON.parse(value);
+  } catch (_) {
+    return value;
+  }
+}
+
+export function buildFilterRecipe({
+  field = '',
+  op = 'eq',
+  value,
+  select = [],
+  sortField = '',
+  sortOrder = 'asc',
+  limit,
+  offset = 0,
+  filterLogic = 'and',
+  clauses = []
+} = {}) {
+  const recipe = {
+    limit: Number.isFinite(Number(limit)) ? Number(limit) : undefined,
+    offset: Number.isFinite(Number(offset)) ? Number(offset) : 0
+  };
+
+  const cleanSelect = Array.isArray(select)
+    ? select.map(item => String(item).trim()).filter(Boolean)
+    : String(select || '')
+        .split(',')
+        .map(item => item.trim())
+        .filter(Boolean);
+  const cleanSortField = String(sortField || '').trim();
+
+  const buildLeaf = (leafField = field, leafOp = op, leafValue = value) => {
+    const cleanLeafField = String(leafField || '').trim();
+    if (!cleanLeafField) return undefined;
+    return {
+      path: cleanLeafField,
+      op: leafOp || 'eq',
+      value: parseFilterValue(leafValue)
+    };
+  };
+
+  const normalizedClauses = Array.isArray(clauses) && clauses.length
+    ? clauses
+    : (field ? [{ field, op, value }] : []);
+
+  const filterTerms = normalizedClauses
+    .map(clause => buildLeaf(clause?.field, clause?.op, clause?.value))
+    .filter(Boolean);
+
+  if (filterTerms.length > 1) {
+    const logic = (filterLogic || 'and').toLowerCase();
+    if (logic === 'not') {
+      recipe.filter = {
+        not: filterTerms.length === 1 ? filterTerms[0] : { and: filterTerms }
+      };
+    } else {
+      recipe.filter = { [logic]: filterTerms };
+    }
+  } else if (filterTerms.length === 1) {
+    recipe.filter = filterTerms[0];
+  }
+
+  if (cleanSelect.length) {
+    recipe.select = cleanSelect;
+  }
+
+  if (cleanSortField) {
+    recipe.sort = [{ field: cleanSortField, order: sortOrder || 'asc' }];
+  }
+
+  return Object.fromEntries(
+    Object.entries(recipe).filter(([, val]) => val !== undefined && val !== null && val !== '')
+  );
+}
+
 async function request(endpoint, options = {}) {
   const url = `${baseUrl}${endpoint}`;
   const headers = {
@@ -141,7 +237,16 @@ export const api = {
     });
   },
 
-  // Path Query (JSON storage)
+  // Engine 4A-C recipe queries
+  async queryStorage(dbName, storageName, recipe, storageType) {
+    const query = storageType ? `?storage_type=${storageType}` : '';
+    return request(`/databases/${encodeURIComponent(dbName)}/storages/${encodeURIComponent(storageName)}/query${query}`, {
+      method: 'POST',
+      body: JSON.stringify(recipe)
+    });
+  },
+
+  // Path Query (legacy JSON storage path query)
   async queryPath(dbName, storageName, pathQuery, storageType) {
     const query = storageType ? `?storage_type=${storageType}` : '';
     // path query can have slashes

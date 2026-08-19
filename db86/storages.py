@@ -140,8 +140,8 @@ class Table(UserDict):
         Get a range of values by range
         '''
         GET_ITEM = f'SELECT * FROM "{self.name}"'\
-            + f'WHERE "_rowid_" BETWEEN ? AND ?'
-        item = self.__conn.select(GET_ITEM, ((slc.start), (slc.stop-1)))
+            + f'WHERE "_rowid_" LIMIT ?, ?'
+        item = self.__conn.select(GET_ITEM, ((slc.start), (slc.stop)))
         if item is None:
             raise KeyError(slc[0])
         return [x for x in item][::slc.step]

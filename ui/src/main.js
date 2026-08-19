@@ -3,7 +3,7 @@
  */
 
 import './styles/atlas.css';
-import { api, getBaseUrl, setBaseUrl } from './services/api.js';
+import { api, getBaseUrl, setBaseUrl, buildFilterRecipe } from './services/api.js';
 import { highlightJson, generateSnippets } from './utils/formatters.js';
 import {
   showToast,
@@ -19,19 +19,45 @@ import {
 window.closeModal = closeModal;
 
 // Application State
+const storedServers = (() => {
+  try {
+    const raw = localStorage.getItem('db86_servers');
+    return raw ? JSON.parse(raw) : [];
+  } catch (_) {
+    return [];
+  }
+})();
+
+const initialBaseUrl = getBaseUrl();
+const defaultServers = storedServers.length ? storedServers : [{ url: initialBaseUrl, name: 'Primary Server' }];
+
 const state = {
-  baseUrl: getBaseUrl(),
+  baseUrl: initialBaseUrl,
+  servers: defaultServers,
+  serverData: {},
+  serverHealth: {},
   isOnline: false,
   ping: null,
   health: null,
   databases: [],
   dbTree: {}, // { [dbName]: { storages: [], metadata: {} } }
+  activeServerUrl: initialBaseUrl,
   activeDb: null,
   activeStorage: null,
   activeStorageType: 'json',
   activeTab: 'documents', // 'documents' | 'table' | 'schema' | 'api'
   items: [],
   queryPath: '',
+  queryRecipe: {
+    filterLogic: 'and',
+    clauses: [{ field: '', op: 'eq', value: '', combo: 'and' }],
+    select: '',
+    sortField: '',
+    sortOrder: 'asc',
+    limit: 50,
+    offset: 0
+  },
+  filterHidden: false,
   limit: 50,
   offset: 0,
   searchFilter: '',
@@ -39,11 +65,94 @@ const state = {
   isLoading: false
 };
 
+function createFilterClause() {
+  return { field: '', op: 'eq', value: '', combo: 'and' };
+}
+
+function buildCurrentRecipe() {
+  const recipeState = state.queryRecipe || {};
+  const select = String(recipeState.select || '')
+    .split(',')
+    .map(item => item.trim())
+    .filter(Boolean);
+  const sortField = String(recipeState.sortField || '').trim();
+  const clauses = Array.isArray(recipeState.clauses) ? recipeState.clauses : [createFilterClause()];
+
+  const activeClauses = clauses
+    .map(clause => ({
+      field: String(clause?.field || '').trim(),
+      op: clause?.op || 'eq',
+      value: clause?.value ?? '',
+      combo: clause?.combo || 'and'
+    }))
+    .filter(clause => clause.field || clause.value !== '');
+
+  const recipe = buildFilterRecipe({
+    field: activeClauses[0]?.field || '',
+    op: activeClauses[0]?.op || 'eq',
+    value: activeClauses[0]?.value ?? '',
+    select,
+    sortField,
+    sortOrder: recipeState.sortOrder || 'asc',
+    limit: Number.isFinite(Number(recipeState.limit)) ? Number(recipeState.limit) : state.limit,
+    offset: Number.isFinite(Number(recipeState.offset)) ? Number(recipeState.offset) : state.offset,
+    filterLogic: recipeState.filterLogic || 'and',
+    clauses: activeClauses.map(({ field, op, value }) => ({ field, op, value }))
+  });
+
+  if (!activeClauses.length && !select.length && !sortField) {
+    return {
+      limit: recipe.limit,
+      offset: recipe.offset
+    };
+  }
+
+  return recipe;
+}
+
+function serializeRecipeForDisplay() {
+  return JSON.stringify(buildCurrentRecipe(), null, 2);
+}
+
+async function changePage(delta) {
+  const limit = Number(state.queryRecipe?.limit) || Number(state.limit) || 50;
+  const currentOffset = Number(state.queryRecipe?.offset) || Number(state.offset) || 0;
+  const nextOffset = Math.max(0, currentOffset + (limit * delta));
+
+  state.queryRecipe = {
+    ...(state.queryRecipe || {}),
+    limit,
+    offset: nextOffset
+  };
+  state.limit = limit;
+  state.offset = nextOffset;
+
+  await loadStorageItems();
+}
+
 // Initialize App
 async function init() {
   renderAppLayout();
   setupEventListeners();
-  await refreshServerState();
+
+  for (const server of state.servers) {
+    ensureServer(server.url);
+    setBaseUrl(server.url);
+    state.activeServerUrl = server.url;
+    try {
+      const { data, duration } = await api.getHealth();
+      state.serverHealth[server.url] = { ...data, isOnline: true, ping: duration };
+      await refreshDatabases(server.url);
+    } catch (_) {
+      state.serverHealth[server.url] = { isOnline: false };
+      state.serverData[server.url] = { databases: [], dbTree: {} };
+    }
+  }
+
+  state.baseUrl = state.activeServerUrl || initialBaseUrl;
+  setBaseUrl(state.baseUrl);
+  renderSidebarTree();
+  renderMainContent();
 
   // Start background health poller (every 5 seconds)
   setInterval(async () => {
@@ -66,8 +175,7 @@ function renderAppLayout() {
           </svg>
         </div>
         <div class="brand-name">
-          DB86 <span style="color:var(--brand-green);">Atlas</span>
-          <span class="brand-badge">Studio</span>
+          DB86 <span class="brand-badge">Studio</span>
         </div>
       </div>
 
@@ -128,6 +236,7 @@ function renderAppLayout() {
 // Setup Event Handlers
 function setupEventListeners() {
   document.getElementById('nav-brand-btn').addEventListener('click', () => {
+    state.activeServerUrl = state.baseUrl;
     state.activeDb = null;
     state.activeStorage = null;
     renderSidebarTree();
@@ -137,9 +246,7 @@ function setupEventListeners() {
   document.getElementById('reconnect-btn').addEventListener('click', async () => {
     const inputVal = document.getElementById('host-url-input').value.trim();
     if (inputVal) {
-      setBaseUrl(inputVal);
-      state.baseUrl = inputVal;
-      await refreshServerState();
+      await connectToServer(inputVal);
     }
   });
 
@@ -187,20 +294,28 @@ async function checkHealthSilently() {
 }
 
 // Full Server State Refresh
-async function refreshServerState() {
+async function refreshServerState(serverUrl = state.activeServerUrl || state.baseUrl) {
+  const url = String(serverUrl || state.baseUrl).replace(/\/+$/, '');
+  ensureServer(url);
+  setBaseUrl(url);
+  state.baseUrl = url;
+  state.activeServerUrl = url;
+
   try {
     const { data, duration } = await api.getHealth();
     state.isOnline = true;
     state.ping = duration;
     state.health = data;
+    state.serverHealth[url] = { ...data, isOnline: true, ping: duration };
     updateStatusIndicator();
 
-    await refreshDatabases();
+    await refreshDatabases(url);
   } catch (err) {
     state.isOnline = false;
     state.ping = null;
+    state.serverHealth[url] = { isOnline: false };
     updateStatusIndicator();
-    showToast('Could not connect to DB86 REST Server at ' + state.baseUrl, 'error');
+    showToast('Could not connect to DB86 REST Server at ' + url, 'error');
     renderMainContent();
   }
 }
@@ -214,33 +329,147 @@ function updateStatusIndicator() {
   }
 }
 
-// Fetch all Databases & Storages
-async function refreshDatabases() {
+function persistServers() {
+  localStorage.setItem('db86_servers', JSON.stringify(state.servers));
+}
+
+function getServerName(url) {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname || parsed.host || 'localhost';
+    return host === '127.0.0.1' || host === 'localhost' ? 'Local Server' : host;
+  } catch (_) {
+    return 'Server';
+  }
+}
+
+function ensureServer(url) {
+  const normalized = String(url).replace(/\/+$/, '');
+  if (!normalized) return;
+  if (!state.servers.some(server => server.url === normalized)) {
+    state.servers.push({ url: normalized, name: getServerName(normalized) });
+    persistServers();
+  }
+}
+
+async function connectToServer(serverUrl) {
+  const normalized = String(serverUrl || '').trim().replace(/\/+$/, '');
+  if (!normalized) return;
+
+  ensureServer(normalized);
+  setBaseUrl(normalized);
+  state.baseUrl = normalized;
+  state.activeServerUrl = normalized;
+  state.activeDb = null;
+  state.activeStorage = null;
+  persistServers();
+  await refreshServerState(normalized);
+}
+
+// Fetch all Databases & Storages for a specific server
+async function refreshDatabases(serverUrl = state.activeServerUrl || state.baseUrl) {
+  const url = String(serverUrl || state.baseUrl).replace(/\/+$/, '');
+  ensureServer(url);
+  setBaseUrl(url);
+  state.baseUrl = url;
+  state.activeServerUrl = url;
+
   try {
     const { data } = await api.listDatabases();
-    state.databases = data.databases || [];
-    state.dbTree = {};
+    const databases = data.databases || [];
+    const dbTree = {};
 
-    for (const dbName of state.databases) {
+    for (const dbName of databases) {
       try {
         const [metaRes, storagesRes] = await Promise.all([
           api.getDatabaseMetadata(dbName),
           api.listStorages(dbName)
         ]);
-        state.dbTree[dbName] = {
+        dbTree[dbName] = {
           metadata: metaRes.data,
           storages: storagesRes.data.storages || []
         };
       } catch (e) {
-        state.dbTree[dbName] = { metadata: {}, storages: [] };
+        dbTree[dbName] = { metadata: {}, storages: [] };
       }
     }
 
-    renderSidebarTree();
-    renderMainContent();
+    state.serverData[url] = { databases, dbTree };
+    state.databases = databases;
+    state.dbTree = dbTree;
+
+    if (state.activeServerUrl === url) {
+      renderSidebarTree();
+      renderMainContent();
+    }
   } catch (err) {
+    state.serverData[url] = { databases: [], dbTree: {} };
+    state.databases = [];
+    state.dbTree = {};
     console.error('Failed to list databases:', err);
   }
+}
+
+function renderServerTreeNode(server) {
+  const serverUrl = server.url;
+  const serverData = state.serverData[serverUrl] || { databases: [], dbTree: {} };
+  const databases = serverData.databases || [];
+  const isActiveServer = state.activeServerUrl === serverUrl;
+  const isActiveDbOnThisServer = state.activeDb && state.serverData[serverUrl]?.dbTree[state.activeDb];
+
+  return `
+    <div class="server-item">
+      <div class="db-header ${isActiveServer && !state.activeDb && !state.activeStorage ? 'active' : ''}" data-server="${serverUrl}">
+        <div class="db-header-left">
+          <span style="font-size:1rem;">🖥️</span>
+          <span title="${serverUrl}">${server.name || getServerName(serverUrl)}</span>
+        </div>
+        <div class="db-actions">
+          <span class="status-dot ${state.serverHealth[serverUrl]?.isOnline ? 'online' : 'offline'}" style="width:8px; height:8px; margin-right:4px;"></span>
+        </div>
+      </div>
+
+      <div class="storage-list">
+        ${databases.length === 0 ? '<div style="padding:6px 0; color:var(--text-muted); font-size:0.75rem;">No databases</div>' : ''}
+        ${databases.map(dbName => {
+          const dbInfo = serverData.dbTree[dbName] || { storages: [], metadata: {} };
+          const storages = dbInfo.storages || [];
+          const isActiveDb = state.activeServerUrl === serverUrl && state.activeDb === dbName && !state.activeStorage;
+          const isActiveStorageDb = state.activeServerUrl === serverUrl && state.activeDb === dbName && state.activeStorage;
+
+          return `
+            <div class="db-cluster-item">
+              <div class="db-header ${isActiveDb || isActiveStorageDb ? 'active' : ''}" data-server="${serverUrl}" data-db="${dbName}">
+                <div class="db-header-left">
+                  <span style="font-size:0.9rem;">🗄️</span>
+                  <span title="${dbName}">${dbName}</span>
+                </div>
+                <div class="db-actions">
+                  <span style="font-size:0.65rem; color:var(--text-secondary);">${storages.length}</span>
+                </div>
+              </div>
+
+              <div class="storage-list">
+                ${storages.map(storage => {
+                  const isActiveStorage = state.activeServerUrl === serverUrl && state.activeDb === dbName && state.activeStorage === storage.name;
+                  const isJson = storage.storage_type === 'json';
+                  return `
+                    <div class="storage-item ${isActiveStorage ? 'active' : ''}" data-server="${serverUrl}" data-db="${dbName}" data-storage="${storage.name}" data-type="${storage.storage_type}">
+                      <div class="storage-left">
+                        <span>${isJson ? '📄' : '📊'}</span>
+                        <span>${storage.name}</span>
+                      </div>
+                      <span class="storage-badge ${isJson ? 'badge-json' : 'badge-table'}">${isJson ? 'JSON' : 'TABLE'}</span>
+                    </div>
+                  `;
+                }).join('')}
+              </div>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    </div>
+  `;
 }
 
 // Render Database Sidebar Tree
@@ -267,116 +496,89 @@ function renderSidebarTree() {
   }
 
   let html = '';
-  const filter = state.searchFilter;
+  const filter = state.searchFilter || '';
 
-  for (const dbName of state.databases) {
-    const dbInfo = state.dbTree[dbName] || { storages: [], metadata: {} };
-    const storages = dbInfo.storages;
-    
-    // Filter matching
-    const matchesDb = dbName.toLowerCase().includes(filter);
-    const matchingStorages = storages.filter(s => s.name.toLowerCase().includes(filter));
-    if (filter && !matchesDb && matchingStorages.length === 0) {
-      continue;
-    }
+  if (state.servers.length === 0) {
+    container.innerHTML = `
+      <div style="padding: 24px 16px; text-align:center; color:var(--text-muted); font-size:0.85rem;">
+        No servers configured.
+      </div>
+    `;
+    return;
+  }
 
-    const isActiveDb = state.activeDb === dbName;
+  for (const server of state.servers) {
+    const serverUrl = server.url;
+    const serverData = state.serverData[serverUrl] || { databases: [], dbTree: {} };
+    const dbNames = serverData.databases || [];
+
+    const filteredDbNames = dbNames.filter(dbName => {
+      if (!filter) return true;
+      const dbInfo = serverData.dbTree[dbName] || { storages: [] };
+      const storages = dbInfo.storages || [];
+      return dbName.toLowerCase().includes(filter) || storages.some(storage => storage.name.toLowerCase().includes(filter));
+    });
+
+    if (filter && filteredDbNames.length === 0) continue;
 
     html += `
       <div class="db-item">
-        <div class="db-header ${isActiveDb && !state.activeStorage ? 'active' : ''}" data-db="${dbName}">
-          <div class="db-header-left">
-            <span style="font-size:1rem;">🗄️</span>
-            <span title="${dbName}">${dbName}</span>
-          </div>
-          <div class="db-actions">
-            <button class="btn-icon add-storage-btn" data-db="${dbName}" title="Add Collection / Table">➕</button>
-            <button class="btn-icon danger close-db-btn" data-db="${dbName}" title="Close Database">✕</button>
-          </div>
-        </div>
-
-        <div class="storage-list">
-          ${storages.map(s => {
-            if (filter && !matchesDb && !s.name.toLowerCase().includes(filter)) return '';
-            const isActiveStorage = isActiveDb && state.activeStorage === s.name;
-            const isJson = s.storage_type === 'json';
-            return `
-              <div class="storage-item ${isActiveStorage ? 'active' : ''}" data-db="${dbName}" data-storage="${s.name}" data-type="${s.storage_type}">
-                <div class="storage-left">
-                  <span>${isJson ? '📄' : '📊'}</span>
-                  <span>${s.name}</span>
-                </div>
-                <span class="storage-badge ${isJson ? 'badge-json' : 'badge-table'}">
-                  ${isJson ? 'JSON' : 'TABLE'}
-                </span>
-              </div>
-            `;
-          }).join('')}
-        </div>
+        ${renderServerTreeNode(server)}
       </div>
     `;
   }
 
   container.innerHTML = html;
 
-  // Bind Sidebar item click events
-  container.querySelectorAll('.db-header').forEach(el => {
+  container.querySelectorAll('.db-header[data-server]').forEach(el => {
     el.addEventListener('click', (e) => {
       if (e.target.closest('.db-actions')) return;
+      const serverUrl = el.getAttribute('data-server');
       const dbName = el.getAttribute('data-db');
-      selectDatabase(dbName);
+      if (dbName) {
+        selectDatabase(dbName, serverUrl);
+      } else {
+        selectServer(serverUrl);
+      }
     });
   });
 
   container.querySelectorAll('.storage-item').forEach(el => {
     el.addEventListener('click', () => {
+      const serverUrl = el.getAttribute('data-server');
       const dbName = el.getAttribute('data-db');
       const storageName = el.getAttribute('data-storage');
       const storageType = el.getAttribute('data-type');
+      selectServer(serverUrl);
       selectStorage(dbName, storageName, storageType);
-    });
-  });
-
-  container.querySelectorAll('.add-storage-btn').forEach(el => {
-    el.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const dbName = el.getAttribute('data-db');
-      openCreateStorageModal(dbName, async (params) => {
-        try {
-          await api.createStorage(dbName, params);
-          showToast(`Created ${params.storage_type} storage '${params.name}'!`);
-          await refreshDatabases();
-          selectStorage(dbName, params.name, params.storage_type);
-        } catch (err) {
-          showToast(`Failed to create storage: ${err.message}`, 'error');
-        }
-      });
-    });
-  });
-
-  container.querySelectorAll('.close-db-btn').forEach(el => {
-    el.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      const dbName = el.getAttribute('data-db');
-      if (confirm(`Are you sure you want to close database '${dbName}'?`)) {
-        try {
-          await api.closeDatabase(dbName);
-          showToast(`Closed database '${dbName}'`);
-          if (state.activeDb === dbName) {
-            state.activeDb = null;
-            state.activeStorage = null;
-          }
-          await refreshDatabases();
-        } catch (err) {
-          showToast(`Failed to close database: ${err.message}`, 'error');
-        }
-      }
     });
   });
 }
 
+function selectServer(serverUrl) {
+  const normalized = String(serverUrl || '').replace(/\/+$/, '');
+  if (!normalized) return;
+
+  ensureServer(normalized);
+  setBaseUrl(normalized);
+  state.baseUrl = normalized;
+  state.activeServerUrl = normalized;
+  state.activeDb = null;
+  state.activeStorage = null;
+  state.items = [];
+  renderSidebarTree();
+  renderMainContent();
+}
+
 // Select Database
-function selectDatabase(dbName) {
+function selectDatabase(dbName, serverUrl = state.activeServerUrl) {
+  const normalizedUrl = String(serverUrl || state.activeServerUrl || state.baseUrl).replace(/\/+$/, '');
+  if (!normalizedUrl) return;
+
+  ensureServer(normalizedUrl);
+  setBaseUrl(normalizedUrl);
+  state.baseUrl = normalizedUrl;
+  state.activeServerUrl = normalizedUrl;
   state.activeDb = dbName;
   state.activeStorage = null;
   state.items = [];
@@ -386,18 +588,52 @@ function selectDatabase(dbName) {
 
 // Select Storage & Load Data
 async function selectStorage(dbName, storageName, storageType = 'json') {
+  const normalizedUrl = String(state.activeServerUrl || state.baseUrl).replace(/\/+$/, '');
+  if (!normalizedUrl) return;
+
+  ensureServer(normalizedUrl);
+  setBaseUrl(normalizedUrl);
+  state.baseUrl = normalizedUrl;
+  state.activeServerUrl = normalizedUrl;
   state.activeDb = dbName;
   state.activeStorage = storageName;
   state.activeStorageType = storageType;
   state.activeTab = 'documents';
   state.queryPath = '';
+  state.queryRecipe = {
+    filterLogic: 'and',
+    clauses: [createFilterClause()],
+    select: '',
+    sortField: '',
+    sortOrder: 'asc',
+    limit: 50,
+    offset: 0
+  };
+  state.filterHidden = false;
   state.offset = 0;
   
   renderSidebarTree();
   await loadStorageItems();
 }
 
-// Load Storage Items / Run Path Query
+function normalizeListResult(rawItems) {
+  if (!Array.isArray(rawItems)) return [];
+
+  if (rawItems.length > 0 && Array.isArray(rawItems[0])) {
+    return rawItems.map(([k, v]) => ({ key: k, value: v }));
+  }
+
+  if (rawItems.length > 0 && typeof rawItems[0] === 'object' && rawItems[0] !== null && 'key' in rawItems[0]) {
+    return rawItems;
+  }
+
+  return rawItems.map((item, idx) => {
+    const keyVal = (typeof item === 'object' && item !== null) ? Object.values(item)[0] || `row_${idx}` : `row_${idx}`;
+    return { key: String(keyVal), value: item };
+  });
+}
+
+// Load Storage Items / Run Query
 async function loadStorageItems() {
   if (!state.activeDb || !state.activeStorage) return;
 
@@ -406,35 +642,26 @@ async function loadStorageItems() {
 
   try {
     let res;
-    if (state.queryPath && state.queryPath.trim() !== '') {
-      // Path query execution
+    const recipe = buildCurrentRecipe();
+    const hasRecipeFilter = Boolean(recipe.filter || recipe.select || recipe.sort || recipe.limit || recipe.offset);
+
+    if (!state.filterHidden && hasRecipeFilter && (recipe.filter || recipe.select || recipe.sort)) {
+      res = await api.queryStorage(state.activeDb, state.activeStorage, recipe, state.activeStorageType);
+      const rawItems = res.data.items || [];
+      state.items = normalizeListResult(rawItems);
+    } else if (state.queryPath && state.queryPath.trim() !== '') {
       res = await api.queryPath(state.activeDb, state.activeStorage, state.queryPath.trim(), state.activeStorageType);
       state.items = (res.data.results || []).map((val, idx) => ({
         key: `match_${idx + 1}`,
         value: val
       }));
     } else {
-      // Standard item list
       res = await api.listItems(state.activeDb, state.activeStorage, {
         limit: state.limit,
         offset: state.offset,
         storage_type: state.activeStorageType
       });
-      
-      const rawItems = res.data.items || [];
-      if (Array.isArray(rawItems) && rawItems.length > 0 && Array.isArray(rawItems[0])) {
-        // [ [key, val], ... ]
-        state.items = rawItems.map(([k, v]) => ({ key: k, value: v }));
-      } else if (Array.isArray(rawItems) && rawItems.length > 0 && typeof rawItems[0] === 'object' && 'key' in rawItems[0]) {
-        state.items = rawItems;
-      } else if (Array.isArray(rawItems)) {
-        state.items = rawItems.map((item, idx) => {
-          const keyVal = (typeof item === 'object' && item !== null) ? Object.values(item)[0] || `row_${idx}` : `row_${idx}`;
-          return { key: String(keyVal), value: item };
-        });
-      } else {
-        state.items = [];
-      }
+      state.items = normalizeListResult(res.data.items || []);
     }
 
     state.lastDuration = res.duration;
@@ -452,13 +679,156 @@ function renderMainContent() {
   const main = document.getElementById('main-content');
   if (!main) return;
 
-  if (!state.activeDb || !state.activeStorage) {
-    main.innerHTML = renderClusterOverviewHtml();
-    bindOverviewEvents();
-  } else {
+  if (state.activeStorage && state.activeDb) {
     main.innerHTML = renderDataExplorerHtml();
     bindExplorerEvents();
+    return;
   }
+
+  if (state.activeDb && !state.activeStorage) {
+    main.innerHTML = renderDatabaseOverviewHtml();
+    bindDatabaseOverviewEvents();
+    return;
+  }
+
+  if (state.activeServerUrl) {
+    main.innerHTML = renderServerOverviewHtml();
+    bindServerOverviewEvents();
+    return;
+  }
+
+  main.innerHTML = renderClusterOverviewHtml();
+  bindOverviewEvents();
+}
+
+function renderServerOverviewHtml() {
+  const serverUrl = state.activeServerUrl || state.baseUrl;
+  const serverData = state.serverData[serverUrl] || { databases: [], dbTree: {} };
+  const health = state.serverHealth[serverUrl] || state.health || {};
+  const metrics = health.system_metrics || {};
+  const proc = metrics.process || {};
+  const sys = metrics.system || {};
+  const uptime = health.uptime || '0d 00:00:00';
+  const totalDbs = serverData.databases.length || 0;
+  const totalStorages = Object.values(serverData.dbTree || {}).reduce((sum, db) => sum + (db.storages || []).length, 0);
+  const memoryMb = proc.memory_mb || 0;
+  const memoryPercent = proc.memory_percent || 0;
+  const cpuPercent = proc.cpu_percent || 0;
+  const diskPercent = sys.disk_usage_percent || 0;
+
+  return `
+    <div class="overview-view">
+      <div class="overview-hero">
+        <div>
+          <h1 class="hero-title">Server Metrics</h1>
+          <p class="hero-subtitle">${serverUrl}</p>
+        </div>
+        <div style="display:flex; gap:10px;">
+          <button id="server-connect-btn" class="btn btn-secondary"><span>🔗</span> Connect</button>
+        </div>
+      </div>
+
+      <div class="metrics-grid">
+        <div class="metric-card">
+          <div class="metric-card-top"><span class="metric-card-title">Server Status</span><span>⚡</span></div>
+          <div class="metric-value" style="color:${health && Object.keys(health).length ? 'var(--brand-green)' : 'var(--brand-red)'};">${health && Object.keys(health).length ? 'ONLINE' : 'OFFLINE'}</div>
+          <div class="metric-subtext">Uptime: ${uptime}</div>
+        </div>
+
+        <div class="metric-card">
+          <div class="metric-card-top"><span class="metric-card-title">Databases</span><span>🗄️</span></div>
+          <div class="metric-value">${totalDbs}</div>
+          <div class="metric-subtext">${totalStorages} total storage objects</div>
+        </div>
+
+        <div class="metric-card">
+          <div class="metric-card-top"><span class="metric-card-title">Memory Usage</span><span>🧠</span></div>
+          <div class="metric-value">${memoryMb} <span style="font-size:1rem; font-weight:500;">MB</span></div>
+          <div class="progress-bar-bg"><div class="progress-bar-fill" style="width:${Math.min(100, Math.max(5, memoryPercent * 5))}%;"></div></div>
+          <div class="metric-subtext">${memoryPercent}% of host memory</div>
+        </div>
+
+        <div class="metric-card">
+          <div class="metric-card-top"><span class="metric-card-title">System Load</span><span>📊</span></div>
+          <div class="metric-value">${cpuPercent}% <span style="font-size:1rem; font-weight:500;">CPU</span></div>
+          <div class="progress-bar-bg"><div class="progress-bar-fill" style="width:${Math.min(100, Math.max(5, cpuPercent))}%;"></div></div>
+          <div class="metric-subtext">Disk usage: ${diskPercent}%</div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function bindServerOverviewEvents() {
+  const btn = document.getElementById('server-connect-btn');
+  if (btn) {
+    btn.addEventListener('click', () => {
+      openConnectModal(state.baseUrl, state.activeDb, state.activeStorage);
+    });
+  }
+}
+
+function renderDatabaseOverviewHtml() {
+  const serverUrl = state.activeServerUrl || state.baseUrl;
+  const dbInfo = (state.serverData[serverUrl] || {}).dbTree?.[state.activeDb] || { metadata: {}, storages: [] };
+  const meta = dbInfo.metadata || {};
+  const storages = dbInfo.storages || [];
+
+  return `
+    <div class="overview-view">
+      <div class="overview-hero">
+        <div>
+          <h1 class="hero-title">Database Metrics</h1>
+          <p class="hero-subtitle">${state.activeDb} · ${serverUrl}</p>
+        </div>
+      </div>
+
+      <div class="metrics-grid">
+        <div class="metric-card">
+          <div class="metric-card-top"><span class="metric-card-title">Database</span><span>🗄️</span></div>
+          <div class="metric-value">${state.activeDb}</div>
+          <div class="metric-subtext">File: ${meta.filename || `${state.activeDb}.db`}</div>
+        </div>
+
+        <div class="metric-card">
+          <div class="metric-card-top"><span class="metric-card-title">Storage Objects</span><span>📦</span></div>
+          <div class="metric-value">${storages.length}</div>
+          <div class="metric-subtext">${storages.filter(s => s.storage_type === 'json').length} JSON · ${storages.filter(s => s.storage_type === 'table').length} table</div>
+        </div>
+
+        <div class="metric-card">
+          <div class="metric-card-top"><span class="metric-card-title">Journal Mode</span><span>🧾</span></div>
+          <div class="metric-value" style="font-size:1.2rem;">${meta.journal_mode || 'WAL'}</div>
+          <div class="metric-subtext">Autocommit: ${meta.autocommit ? 'Enabled' : 'Disabled'}</div>
+        </div>
+
+        <div class="metric-card">
+          <div class="metric-card-top"><span class="metric-card-title">Status</span><span>✅</span></div>
+          <div class="metric-value" style="font-size:1.2rem; color:var(--brand-green);">READY</div>
+          <div class="metric-subtext">${storages.length ? 'Storage objects available' : 'No storage objects yet'}</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-header">
+          <div class="panel-title">Database Parameters</div>
+        </div>
+        <table class="atlas-table">
+          <tbody>
+            <tr><td style="width:200px; color:var(--text-secondary);">Database Name</td><td><strong>${state.activeDb}</strong></td></tr>
+            <tr><td style="color:var(--text-secondary);">File</td><td><code>${meta.filename || `${state.activeDb}.db`}</code></td></tr>
+            <tr><td style="color:var(--text-secondary);">Journal Mode</td><td><code>${meta.journal_mode || 'WAL'}</code></td></tr>
+            <tr><td style="color:var(--text-secondary);">Autocommit</td><td><code>${meta.autocommit ? 'true' : 'false'}</code></td></tr>
+            <tr><td style="color:var(--text-secondary);">Storage Count</td><td>${storages.length}</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function bindDatabaseOverviewEvents() {
+  // intentionally blank; DB details are informational and navigation is handled in the left tree
 }
 
 // Cluster Overview View
@@ -683,26 +1053,74 @@ function renderDataExplorerHtml() {
 
       <!-- Atlas Query / Find Bar (Active for Documents & Table tabs) -->
       ${state.activeTab === 'documents' || state.activeTab === 'table' ? `
-        <div class="atlas-query-bar">
-          <div class="query-input-group">
-            <span class="query-label">Find:</span>
-            <input type="text" id="atlas-path-query-input" class="query-input" 
-              placeholder="${isJson ? 'e.g. */email or users/*/role or alice/address' : 'e.g. path query'}" 
-              value="${state.queryPath}" />
+        ${state.filterHidden ? `
+          <div class="atlas-query-bar">
+            <button id="filter-show-btn" class="btn btn-secondary">Show Filter</button>
           </div>
+        ` : `
+          <div class="atlas-query-bar filter-stack">
+            <div class="filter-designer">
+              <div class="filter-toolbar">
+                <span class="query-label">Logic:</span>
+                <select id="filter-logic-select" class="query-select short-select">
+                  <option value="and" ${state.queryRecipe.filterLogic === 'and' ? 'selected' : ''}>and</option>
+                  <option value="or" ${state.queryRecipe.filterLogic === 'or' ? 'selected' : ''}>or</option>
+                  <option value="not" ${state.queryRecipe.filterLogic === 'not' ? 'selected' : ''}>not</option>
+                </select>
+                <button id="filter-add-clause-btn" class="btn btn-secondary small-btn">Add Clause</button>
+                <button id="filter-hide-btn" class="btn btn-secondary small-btn">Hide Filter</button>
+                ${state.filterHidden ? '' : `<button id="query-preview-hide-btn" class="btn btn-secondary small-btn">Hide JSON</button>`}
+              </div>
 
-          <div class="query-controls">
-            <span style="font-size:0.8rem; color:var(--text-secondary);">Limit:</span>
-            <input type="number" id="query-limit-input" class="limit-input" value="${state.limit}" min="1" max="1000" />
-            
-            <button id="query-execute-btn" class="btn btn-primary">
-              <span>🔍</span> Execute
-            </button>
-            <button id="query-reset-btn" class="btn btn-secondary">
-              Reset
-            </button>
+              ${(state.queryRecipe.clauses || [createFilterClause()]).map((clause, index) => `
+                <div class="filter-row" data-clause-index="${index}">
+                  <input type="text" class="query-input compact filter-clause-field" data-index="${index}" value="${clause.field || ''}" placeholder="field/path" />
+                  <select class="query-select short-select filter-clause-op" data-index="${index}">
+                    <option value="eq" ${clause.op === 'eq' ? 'selected' : ''}>eq</option>
+                    <option value="ne" ${clause.op === 'ne' ? 'selected' : ''}>ne</option>
+                    <option value="gt" ${clause.op === 'gt' ? 'selected' : ''}>gt</option>
+                    <option value="gte" ${clause.op === 'gte' ? 'selected' : ''}>gte</option>
+                    <option value="lt" ${clause.op === 'lt' ? 'selected' : ''}>lt</option>
+                    <option value="lte" ${clause.op === 'lte' ? 'selected' : ''}>lte</option>
+                    <option value="contains" ${clause.op === 'contains' ? 'selected' : ''}>contains</option>
+                    <option value="startswith" ${clause.op === 'startswith' ? 'selected' : ''}>startswith</option>
+                    <option value="endswith" ${clause.op === 'endswith' ? 'selected' : ''}>endswith</option>
+                    <option value="in" ${clause.op === 'in' ? 'selected' : ''}>in</option>
+                    <option value="exists" ${clause.op === 'exists' ? 'selected' : ''}>exists</option>
+                  </select>
+                  <input type="text" class="query-input compact filter-clause-value" data-index="${index}" value="${clause.value ?? ''}" placeholder="value" />
+                  <button class="btn btn-secondary small-btn filter-remove-clause-btn" data-index="${index}" title="Remove clause">×</button>
+                </div>
+              `).join('')}
+
+              <div class="filter-row filter-meta-row">
+                <span class="query-label">Select:</span>
+                <input type="text" id="filter-select-input" class="query-input compact" value="${state.queryRecipe.select || ''}" placeholder="name,age,role" />
+                <span class="query-label">Sort:</span>
+                <input type="text" id="filter-sort-field-input" class="query-input compact" value="${state.queryRecipe.sortField || ''}" placeholder="sort field" />
+                <select id="filter-sort-order-input" class="query-select short-select">
+                  <option value="asc" ${state.queryRecipe.sortOrder === 'asc' ? 'selected' : ''}>asc</option>
+                  <option value="desc" ${state.queryRecipe.sortOrder === 'desc' ? 'selected' : ''}>desc</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="query-controls">
+              <span style="font-size:0.8rem; color:var(--text-secondary);">Offset:</span>
+              <input type="number" id="query-offset-input" class="limit-input" value="${state.queryRecipe.offset || 0}" min="0" max="100000" />
+              <span style="font-size:0.8rem; color:var(--text-secondary);">Limit:</span>
+              <input type="number" id="query-limit-input" class="limit-input" value="${state.limit}" min="1" max="1000" />
+              <button id="query-execute-btn" class="btn btn-primary">
+                <span>🔍</span> Execute
+              </button>
+              <button id="query-reset-btn" class="btn btn-secondary">
+                Reset
+              </button>
+            </div>
           </div>
-        </div>
+          ${state.filterHidden ? '' : `<div class="query-json-preview" id="query-json-preview">${serializeRecipeForDisplay()}</div>`}
+          ${state.filterHidden ? '' : `<button id="query-preview-show-btn" class="btn btn-secondary small-btn" style="display:none;">Show JSON</button>`}
+        `}
       ` : ''}
 
       <!-- Main Explorer Body -->
@@ -737,17 +1155,27 @@ function renderTabContent() {
 
 // Documents View (JSON Cards)
 function renderDocumentsTab() {
-  const isQuery = state.queryPath && state.queryPath.trim() !== '';
+  const recipe = buildCurrentRecipe();
+  const isQuery = Boolean((state.queryRecipe && (state.queryRecipe.field || state.queryRecipe.select || state.queryRecipe.sortField)) || (state.queryPath && state.queryPath.trim() !== ''));
+  const filterLabel = state.queryRecipe && state.queryRecipe.field ? `${state.queryRecipe.field} ${state.queryRecipe.op}` : state.queryPath || 'recipe';
+
+  const pageSize = Number(state.limit) || 50;
+  const currentOffset = Number(state.offset) || 0;
+  const hasPrevPage = currentOffset > 0;
+  const hasNextPage = state.items.length >= pageSize;
 
   return `
     <div class="explorer-actions-bar">
       <div class="doc-count-tag">
         Showing <strong>${state.items.length}</strong> items 
         ${state.lastDuration !== null ? `<span style="margin-left:8px; font-family:var(--font-mono); color:var(--brand-green);">(${state.lastDuration}ms)</span>` : ''}
-        ${isQuery ? `<span style="margin-left:8px; color:#60a5fa; font-family:var(--font-mono);">[Filter: ${state.queryPath}]</span>` : ''}
+        ${isQuery ? `<span style="margin-left:8px; color:#60a5fa; font-family:var(--font-mono);">[Filter: ${filterLabel}]</span>` : ''}
       </div>
 
-      <div style="display:flex; gap:8px;">
+      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+        <button id="prev-page-btn" class="btn btn-secondary" ${hasPrevPage ? '' : 'disabled'}>← Previous</button>
+        <span style="font-size:0.8rem; color:var(--text-secondary);">Page ${Math.floor(currentOffset / pageSize) + 1}</span>
+        <button id="next-page-btn" class="btn btn-secondary" ${hasNextPage ? '' : 'disabled'}>Next →</button>
         <button id="insert-doc-btn" class="btn btn-primary">
           <span>➕</span> Insert Document
         </button>
@@ -817,13 +1245,21 @@ function renderTableGridTab() {
 
   const columns = Array.from(colSet);
 
+  const pageSize = Number(state.limit) || 50;
+  const currentOffset = Number(state.offset) || 0;
+  const hasPrevPage = currentOffset > 0;
+  const hasNextPage = state.items.length >= pageSize;
+
   return `
     <div class="explorer-actions-bar">
       <div class="doc-count-tag">
         Showing <strong>${state.items.length}</strong> rows 
         ${state.lastDuration !== null ? `<span style="margin-left:8px; font-family:var(--font-mono); color:var(--brand-green);">(${state.lastDuration}ms)</span>` : ''}
       </div>
-      <div style="display:flex; gap:8px;">
+      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+        <button id="prev-page-btn" class="btn btn-secondary" ${hasPrevPage ? '' : 'disabled'}>← Previous</button>
+        <span style="font-size:0.8rem; color:var(--text-secondary);">Page ${Math.floor(currentOffset / pageSize) + 1}</span>
+        <button id="next-page-btn" class="btn btn-secondary" ${hasNextPage ? '' : 'disabled'}>Next →</button>
         <button id="insert-row-btn" class="btn btn-primary">➕ Add Row</button>
         <button id="export-json-btn" class="btn btn-secondary">💾 Export</button>
       </div>
@@ -956,30 +1392,165 @@ function bindExplorerEvents() {
 
   // Query Execution
   const executeBtn = document.getElementById('query-execute-btn');
-  const queryInput = document.getElementById('atlas-path-query-input');
+  const selectInput = document.getElementById('filter-select-input');
+  const sortFieldInput = document.getElementById('filter-sort-field-input');
+  const sortOrderInput = document.getElementById('filter-sort-order-input');
+  const logicInput = document.getElementById('filter-logic-select');
   const limitInput = document.getElementById('query-limit-input');
+  const offsetInput = document.getElementById('query-offset-input');
+  const previewEl = document.getElementById('query-json-preview');
+  const addClauseBtn = document.getElementById('filter-add-clause-btn');
+  const hideFilterBtn = document.getElementById('filter-hide-btn');
+  const showFilterBtn = document.getElementById('filter-show-btn');
+  const hidePreviewBtn = document.getElementById('query-preview-hide-btn');
+  const showPreviewBtn = document.getElementById('query-preview-show-btn');
+  const prevPageBtn = document.getElementById('prev-page-btn');
+  const nextPageBtn = document.getElementById('next-page-btn');
 
-  if (executeBtn && queryInput) {
-    executeBtn.addEventListener('click', async () => {
-      state.queryPath = queryInput.value;
-      if (limitInput) state.limit = parseInt(limitInput.value) || 50;
-      await loadStorageItems();
+  const syncRecipeState = () => {
+    const clauses = [...document.querySelectorAll('.filter-clause-field')].map((fieldEl, index) => {
+      const opEl = document.querySelector(`.filter-clause-op[data-index="${index}"]`);
+      const valueEl = document.querySelector(`.filter-clause-value[data-index="${index}"]`);
+      const comboEl = document.querySelector(`.filter-clause-combo[data-index="${index}"]`);
+      return {
+        field: fieldEl ? fieldEl.value : '',
+        op: opEl ? opEl.value : 'eq',
+        value: valueEl ? valueEl.value : '',
+        combo: comboEl ? comboEl.value : 'and'
+      };
     });
 
-    queryInput.addEventListener('keydown', async (e) => {
+    state.queryRecipe = {
+      filterLogic: logicInput ? logicInput.value : state.queryRecipe.filterLogic || 'and',
+      clauses: clauses.length ? clauses : [createFilterClause()],
+      select: selectInput ? selectInput.value : '',
+      sortField: sortFieldInput ? sortFieldInput.value : '',
+      sortOrder: sortOrderInput ? sortOrderInput.value : 'asc',
+      limit: limitInput ? (parseInt(limitInput.value) || 50) : state.limit,
+      offset: offsetInput ? (parseInt(offsetInput.value) || 0) : state.offset
+    };
+    state.limit = state.queryRecipe.limit;
+    state.offset = state.queryRecipe.offset;
+    state.queryPath = '';
+    if (previewEl) {
+      previewEl.textContent = JSON.stringify(buildCurrentRecipe(), null, 2);
+    }
+  };
+
+  const clauseInputs = [
+    ...(selectInput ? [selectInput] : []),
+    ...(sortFieldInput ? [sortFieldInput] : []),
+    ...(sortOrderInput ? [sortOrderInput] : []),
+    ...(logicInput ? [logicInput] : []),
+    ...(limitInput ? [limitInput] : []),
+    ...(offsetInput ? [offsetInput] : [])
+  ];
+  clauseInputs.forEach(el => {
+    el.addEventListener('input', syncRecipeState);
+    el.addEventListener('change', syncRecipeState);
+  });
+
+  document.querySelectorAll('.filter-clause-field, .filter-clause-op, .filter-clause-value, .filter-clause-combo').forEach(el => {
+    el.addEventListener('input', syncRecipeState);
+    el.addEventListener('change', syncRecipeState);
+  });
+
+  if (addClauseBtn) {
+    addClauseBtn.addEventListener('click', () => {
+      const clauses = Array.isArray(state.queryRecipe.clauses) ? state.queryRecipe.clauses : [];
+      state.queryRecipe.clauses = [...clauses, createFilterClause()];
+      renderMainContent();
+    });
+  }
+
+  document.querySelectorAll('.filter-remove-clause-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const idx = Number(btn.getAttribute('data-index'));
+      const clauses = (state.queryRecipe.clauses || []).filter((_, i) => i !== idx);
+      state.queryRecipe.clauses = clauses.length ? clauses : [createFilterClause()];
+      renderMainContent();
+    });
+  });
+
+  if (hideFilterBtn) {
+    hideFilterBtn.addEventListener('click', () => {
+      state.filterHidden = true;
+      renderMainContent();
+    });
+  }
+
+  if (showFilterBtn) {
+    showFilterBtn.addEventListener('click', () => {
+      state.filterHidden = false;
+      renderMainContent();
+    });
+  }
+
+  if (hidePreviewBtn) {
+    hidePreviewBtn.addEventListener('click', () => {
+      const preview = document.getElementById('query-json-preview');
+      if (preview) preview.style.display = 'none';
+      const showBtn = document.getElementById('query-preview-show-btn');
+      if (showBtn) showBtn.style.display = 'inline-flex';
+      hidePreviewBtn.style.display = 'none';
+    });
+  }
+
+  if (showPreviewBtn) {
+    showPreviewBtn.addEventListener('click', () => {
+      const preview = document.getElementById('query-json-preview');
+      if (preview) preview.style.display = 'block';
+      const hideBtn = document.getElementById('query-preview-hide-btn');
+      if (hideBtn) hideBtn.style.display = 'inline-flex';
+      showPreviewBtn.style.display = 'none';
+    });
+  }
+
+  if (executeBtn) {
+    executeBtn.addEventListener('click', async () => {
+      syncRecipeState();
+      await loadStorageItems();
+    });
+  }
+
+  if (prevPageBtn) {
+    prevPageBtn.addEventListener('click', async () => {
+      await changePage(-1);
+    });
+  }
+
+  if (nextPageBtn) {
+    nextPageBtn.addEventListener('click', async () => {
+      await changePage(1);
+    });
+  }
+
+  [selectInput, sortFieldInput, limitInput, offsetInput].forEach(el => {
+    if (!el) return;
+    el.addEventListener('keydown', async (e) => {
       if (e.key === 'Enter') {
-        state.queryPath = queryInput.value;
-        if (limitInput) state.limit = parseInt(limitInput.value) || 50;
+        syncRecipeState();
         await loadStorageItems();
       }
     });
-  }
+  });
 
   const resetBtn = document.getElementById('query-reset-btn');
   if (resetBtn) {
     resetBtn.addEventListener('click', async () => {
       state.queryPath = '';
-      if (queryInput) queryInput.value = '';
+      state.queryRecipe = {
+        filterLogic: 'and',
+        clauses: [createFilterClause()],
+        select: '',
+        sortField: '',
+        sortOrder: 'asc',
+        limit: 50,
+        offset: 0
+      };
+      state.filterHidden = false;
+      state.limit = 50;
+      state.offset = 0;
       await loadStorageItems();
     });
   }

@@ -19,6 +19,7 @@ from contextlib import asynccontextmanager
 from pydantic import BaseModel
 
 from db86.database import Database
+from db86.engines import Engine4A_C
 from db86.storages import JSONStorage, Table
 
 store: Dict[str, Database] = {}
@@ -217,6 +218,11 @@ def get_storage(db: Database, storage_name: str, storage_type: Optional[str] = N
     if storage_type == "table":
         return Table(storage_name, db.conn, db.flag)
     return JSONStorage(storage_name, db.conn, db.flag)
+
+
+def get_engine(storage):
+    """Return the single-table 4A-C engine for a storage."""
+    return Engine4A_C(storage)
 
 
 def table_row_as_dict(table: Table, key: str):
@@ -614,21 +620,41 @@ def list_storage_items(
     storage = get_storage(db, storage_name, storage_type)
 
     if isinstance(storage, JSONStorage):
-        items = list(storage.to_dict().items())
+        items = storage.query({
+            "limit": limit,
+            "offset": offset
+        })
     else:
         items = []
-        for key in storage:
-            try:
-                items.append(table_row_as_dict(storage, key))
-            except KeyError:
-                continue
-
-    if limit is not None:
-        items = items[offset : offset + limit]
-    elif offset:
-        items = items[offset:]
+        _items = storage[offset:offset + limit]
+        cols = storage.columns
+        if len(cols) == 1:
+            items = [{cols[0]: item[0]} for item in _items]
+        else:
+            for item in _items:
+                items.append({cols[0]: item[0], **dict(zip(cols[1:], item[1:]))})
 
     return {"items": items}
+
+
+@app.post("/databases/{db_name}/storages/{storage_name}/query")
+def query_storage_items(
+    db_name: str,
+    storage_name: str,
+    recipe: Dict[str, Any],
+    storage_type: Optional[str] = Query(None, description="Optional storage type override: json or table"),
+):
+    """Execute a declarative Engine 4A-C query against a storage."""
+    log.info(f"Query storage '{storage_name}' in database '{db_name}' with recipe {recipe}")
+    db = get_database(db_name)
+    storage = get_storage(db, storage_name, storage_type)
+    engine = get_engine(storage)
+    try:
+        result = engine.query(recipe)
+        return {"items": result if isinstance(result, list) else [result]}
+    except Exception as exc:
+        log.error(f"Failed to query storage '{storage_name}' in database '{db_name}': {exc}")
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.get("/databases/{db_name}/storages/{storage_name}/items/{item_key}")
