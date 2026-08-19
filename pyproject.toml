@@ -33,16 +33,17 @@ uvicorn = "^0.35.0"
 tabulate = "^0.10.0"
 asyncclick = "8.1.8"
 daemonocle = "^1.2.3"
+textual = "^0.80.0"
 
 [tool.poetry.scripts]
 db86-shell = "db86.shell:cli"
 db86-restx = "db86.rest_shell:cli"
 db86-server = "db86.service.rest_service:cli"
+db86-tui = "db86.service.db86_tui:run"
 
 [tool.poetry.group.dev.dependencies]
 lark = "^1.2.2"
 pytest = "^9.0.0"
-httpx = "^0.28.1"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
