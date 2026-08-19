@@ -748,16 +748,15 @@ class ItemBrowser(Static):
         if not self.current_database or not self.current_storage:
             return
 
+        self.query = {
+            "offset": self.page_offset,
+            "limit": self.page_size
+        }
         meta = await self.api_client.get_storage_metadata(self.current_database, self.current_storage)
         cols = meta.get("columns", ["key", "value"]) if isinstance(meta, dict) else ["key", "value"]
         entries = meta.get("entries", 0) if isinstance(meta, dict) else 0
         
-        items = await self.api_client.list_items(
-            self.current_database,
-            self.current_storage,
-            limit=self.page_size,
-            offset=self.page_offset,
-        )
+        items = await self.api_client.query_items(self.current_database, self.current_storage, self.query)
         has_next = self.page_size + self.page_offset < entries
         self.items = items
 
@@ -827,9 +826,9 @@ class ItemBrowser(Static):
     async def on_filter_items(self) -> None:
         def show_modal(result):
             if result and self.current_database and self.current_storage:
-                asyncio.create_task(self.refresh_items(result))
+                self.query = json.loads(result)
 
-        self.app.push_screen(FilterModal())
+        self.app.push_screen(FilterModal(json.dumps(self.query)), show_modal)
 
     async def _upsert_item(self, key: str, value: Any) -> None:
         if self.current_database and self.current_storage:
@@ -840,12 +839,16 @@ class ItemBrowser(Static):
 class FilterModal(ModalScreen):
     """Popup modal for JSON filter input."""
     DEFAULT_CSS = """
-    # FilterModal {
-    #     width: 1fr;
-    #     height: 1fr;
-    #     align: center middle;
-    #     border: solid $accent;
-    # }
+    FilterModal {
+        align: center middle;
+    }
+
+    #filter-container {
+        width: 60;
+        height: 20;
+        border: solid $accent;
+        background: $surface;
+    }
 
     #filter-label {
         dock: top;
@@ -876,7 +879,7 @@ class FilterModal(ModalScreen):
         self.initial_filter = initial_filter
 
     def compose(self):
-        yield Grid(
+        yield Container(
             Label("Enter JSON filter:", id="filter-label"),
             TextArea(id="filter-json-input", text=self.initial_filter, language="json"),
             Horizontal(
@@ -884,7 +887,7 @@ class FilterModal(ModalScreen):
                 Button("Cancel", id="cancel-filter-btn"),
                 id="filter-buttons"
             ),
-            id="filter-grid"
+            id="filter-container"
         )
 
     @on(Button.Pressed, "#apply-filter-btn")

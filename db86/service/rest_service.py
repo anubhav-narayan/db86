@@ -651,7 +651,9 @@ def query_storage_items(
     engine = get_engine(storage)
     try:
         result = engine.query(recipe)
-        return {"items": result if isinstance(result, list) else [result]}
+        return {
+            "items": result if isinstance(result, list) else [result]
+        }
     except Exception as exc:
         log.error(f"Failed to query storage '{storage_name}' in database '{db_name}': {exc}")
         raise HTTPException(status_code=400, detail=str(exc))
