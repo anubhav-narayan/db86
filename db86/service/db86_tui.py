@@ -259,6 +259,7 @@ class ConnectionModal(ModalScreen):
     #connection-container {
         width: 60;
         height: 15;
+        align: center middle;
         border: solid $accent;
         background: $surface;
     }
@@ -270,12 +271,27 @@ class ConnectionModal(ModalScreen):
 
     .input-group {
         height: auto;
-        margin: 1;
+        margin: 1 2;
+        align-horizontal: left;
     }
 
     .input-group > Label {
-        width: 12;
+        width: auto;
         text-align: right;
+    }
+
+    .input-group > Input {
+        width: auto;
+        min-width: 30;
+        text-align: right;
+    }
+
+    .connection-buttons {
+        align-horizontal: center;
+    }
+    .connection-buttons > Button {
+        width: auto;
+        margin: 0 1;
     }
     """
 
@@ -299,6 +315,7 @@ class ConnectionModal(ModalScreen):
             Horizontal(
                 Button("Connect", variant="primary", id="connect-btn"),
                 Button("Cancel", variant="default", id="cancel-btn"),
+                classes="connection-buttons"
             ),
             id="connection-container",
         )
@@ -764,6 +781,8 @@ class ItemBrowser(Static):
         for item in items:
             row = [str(item.get(col, ""))[:50] for col in cols]
             table.add_row(*row)
+
+        self.query_one("#item-title", Label).update(f"Items ({len(items)} showing)")
         self.query_one("#previous-item-btn", Button).disabled = self.page_offset == 0
         self.query_one("#next-item-btn", Button).disabled = not has_next
 
@@ -1011,7 +1030,7 @@ class DB86TUI(App):
         Binding("ctrl+s", "settings", "Settings", show=True),
     ]
 
-    TITLE = "DB86 Terminal UI"
+    TITLE = "DB86 Terminal Commander"
 
     def __init__(self):
         super().__init__()
