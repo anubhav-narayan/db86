@@ -682,6 +682,7 @@ class ItemBrowser(Static):
     items: reactive[List[Dict]] = reactive([])
     current_database: reactive[Optional[str]] = reactive(None)
     current_storage: reactive[Optional[str]] = reactive(None)
+    query: reactive[Dict] = reactive({"offset": 0, "limit": 100})
     page_offset = 0
     page_size = 100
 
@@ -748,12 +749,8 @@ class ItemBrowser(Static):
         if not self.current_database or not self.current_storage:
             return
 
-        self.query = {
-            "offset": self.page_offset,
-            "limit": self.page_size
-        }
         meta = await self.api_client.get_storage_metadata(self.current_database, self.current_storage)
-        cols = meta.get("columns", ["key", "value"]) if isinstance(meta, dict) else ["key", "value"]
+        cols = self.query.get("select", meta.get("columns", ["Key", "Value"]) if isinstance(meta, dict) else ["Key", "Value"])
         entries = meta.get("entries", 0) if isinstance(meta, dict) else 0
         
         items = await self.api_client.query_items(self.current_database, self.current_storage, self.query)
@@ -772,13 +769,17 @@ class ItemBrowser(Static):
 
     @on(Button.Pressed, "#previous-item-btn")
     async def on_previous_items(self) -> None:
+        self.page_size = self.query['limit']
         if self.page_offset >= self.page_size:
             self.page_offset -= self.page_size
-            await self.refresh_items()
+        self.query['offset'] = self.page_offset
+        await self.refresh_items()
 
     @on(Button.Pressed, "#next-item-btn")
     async def on_next_items(self) -> None:
+        self.page_size = self.query['limit']
         self.page_offset += self.page_size
+        self.query['offset'] = self.page_offset
         await self.refresh_items()
 
     @on(Button.Pressed, "#new-item-btn")
@@ -826,9 +827,10 @@ class ItemBrowser(Static):
     async def on_filter_items(self) -> None:
         def show_modal(result):
             if result and self.current_database and self.current_storage:
-                self.query = json.loads(result)
+                self.query = dict(result)
+                asyncio.create_task(self.refresh_items())
 
-        self.app.push_screen(FilterModal(json.dumps(self.query)), show_modal)
+        self.app.push_screen(FilterModal(json.dumps(self.query, indent=4)), show_modal)
 
     async def _upsert_item(self, key: str, value: Any) -> None:
         if self.current_database and self.current_storage:
@@ -881,7 +883,12 @@ class FilterModal(ModalScreen):
     def compose(self):
         yield Container(
             Label("Enter JSON filter:", id="filter-label"),
-            TextArea(id="filter-json-input", text=self.initial_filter, language="json"),
+            TextArea(
+                id="filter-json-input",
+                text=self.initial_filter,
+                language="json",
+                tab_behavior="indent"
+            ),
             Horizontal(
                 Button("Apply Filter", id="apply-filter-btn", variant="primary"),
                 Button("Cancel", id="cancel-filter-btn"),
@@ -898,11 +905,80 @@ class FilterModal(ModalScreen):
             self.dismiss(parsed)   # return parsed JSON to caller
         except Exception as e:
             # You could show an error label here
-            self.dismiss(None)
+            pass
 
     @on(Button.Pressed, "#cancel-filter-btn")
     def cancel_filter(self):
-        self.dismiss(None)
+        self.dismiss(json.loads(self.initial_filter))
+
+
+class StatusFooter(Horizontal):
+    """Footer with server connection status indicator."""
+
+    # Reactive state for online/offline
+    is_online: reactive[bool] = reactive(False)
+
+    DEFAULT_CSS = """
+    StatusFooter {
+        dock: bottom;
+        height: 1;
+    }
+    StatusFooter > Footer {
+        dock: none;      /* stop Footer from docking inside us */
+        width: 1fr;
+        height: 1;
+    }
+    StatusFooter > .status-bar {
+        dock: none;
+        margin-left: 1;
+        width: auto;
+        height: 1;
+        padding: 0 1;
+    }
+    #status-indicator.online {
+        color: green;
+    }
+    #status-indicator.offline {
+        color: red;
+    }
+    """
+
+    def compose(self):
+        yield Footer()
+        yield Horizontal(
+            Label("o", id="status-indicator"),
+            Label("Checking...", id="status-text"),
+            classes="status-bar",
+        )
+
+    async def on_mount(self) -> None:
+        self._poll_connection()
+        self.set_interval(5, self._poll_connection)
+
+    async def _poll_connection(self) -> None:
+        import time
+        if self.app.api_client:
+            start = time.perf_counter()
+            online = await self.app.api_client.health_check()
+            latency = (time.perf_counter() - start) * 1000
+            self.update_status(online, latency)
+
+    def update_status(self, online: bool, latency_ms: float) -> None:
+        """Update footer when status changes."""
+        indicator = self.query_one("#status-indicator", Label)
+        status_text = self.query_one("#status-text", Label)
+
+        indicator.remove_class("online", "offline")
+        indicator.add_class("online" if online else "offline")
+        indicator.update("o")
+
+        if online:
+            if latency_ms is not None:
+                status_text.update(f"Connected ({latency_ms:.1f} ms)")
+            else:
+                status_text.update("Connected")
+        else:
+            status_text.update("Disconnected")
 
 
 class DB86TUI(App):
@@ -927,12 +1003,6 @@ class DB86TUI(App):
 
     #right-panel {
         width: 2fr;
-    }
-
-    #status {
-        dock: bottom;
-        height: 1;
-        border-top: solid $accent;
     }
     """
 
@@ -972,8 +1042,7 @@ class DB86TUI(App):
             id="right-panel",
         )
 
-        yield Label("Ready", id="status")
-        yield Footer()
+        yield StatusFooter(id="status-footer")
 
     async def on_mount(self) -> None:
         """Initialize on mount."""
@@ -984,15 +1053,11 @@ class DB86TUI(App):
 
         await self._check_connection()
 
+
     async def _check_connection(self) -> None:
         """Check if we can connect to the service."""
-        status_label = self.query_one("#status", Label)
-
         if await self.api_client.health_check():
-            status_label.update("✓ Connected")
             await self.db_browser.refresh_databases()
-        else:
-            status_label.update("✗ Cannot connect to service")
 
     def on_database_browser_database_selected(self, message: DatabaseBrowser.DatabaseSelected) -> None:
         """Handle database selection."""
